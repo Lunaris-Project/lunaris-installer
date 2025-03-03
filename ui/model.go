@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -93,6 +94,7 @@ type Model struct {
 	categoryIndex    int
 	optionIndex      int
 	selectedOptions  map[string][]string
+	selectedCategory int
 	installProgress  int
 	installTotal     int
 	installCurrent   string
@@ -102,6 +104,9 @@ type Model struct {
 	passwordInput    string
 	awaitingPassword bool
 	passwordVisible  bool
+	hasConflict      bool
+	conflictMessage  string
+	conflictChoice   bool
 }
 
 // NewModel creates a new model
@@ -121,6 +126,7 @@ func NewModel() Model {
 		categoryIndex:    0,
 		optionIndex:      0,
 		selectedOptions:  make(map[string][]string),
+		selectedCategory: 0,
 		installProgress:  0,
 		installTotal:     0,
 		installCurrent:   "",
@@ -130,6 +136,9 @@ func NewModel() Model {
 		passwordInput:    "",
 		awaitingPassword: false,
 		passwordVisible:  true,
+		hasConflict:      false,
+		conflictMessage:  "",
+		conflictChoice:   true,
 	}
 }
 
@@ -433,28 +442,47 @@ func (m Model) updatePackageCategoriesPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	return m, nil
 }
 
-// installationView renders the installation view
+// installationView renders the installation page
 func (m Model) installationView() string {
 	title := TitleStyle.Render("Installing Packages")
-	subtitle := SubtitleStyle.Render("Please wait while packages are being installed")
+	subtitle := InfoStyle.Render("Please wait while packages are being installed")
 
-	// Progress information
+	// Progress bar
 	progress := fmt.Sprintf("%d/%d", m.installProgress, m.installTotal)
-	progressBar := RenderProgressBar(50, int(float64(m.installProgress)/float64(m.installTotal)*100))
+	percent := 0
+	if m.installTotal > 0 {
+		percent = int(float64(m.installProgress) / float64(m.installTotal) * 100)
+	}
+	progressBar := RenderProgressBar(40, percent)
 
 	// Current package
-	current := m.spinner.View() + " " + m.installCurrent
+	current := m.installCurrent
+	if current == "" {
+		current = "Preparing..."
+	}
 
 	// Error message
-	var errorMsg string
+	errorMsg := ""
 	if m.installError != "" {
-		errorMsg = ErrorStyle.Render("Error: " + m.installError)
+		if strings.Contains(m.installError, "sudo password required") ||
+			strings.Contains(m.installError, "incorrect") {
+			// Don't show the error, we'll show the password prompt instead
+			m.awaitingPassword = true
+		} else {
+			errorMsg = ErrorStyle.Render("Error: " + m.installError)
+		}
 	}
 
 	// Password input
 	var passwordSection string
 	if m.awaitingPassword {
-		passwordPrompt := WarningStyle.Render("Sudo password required:")
+		passwordPrompt := WarningStyle.Render("Sudo authentication required:")
+		passwordInstructions := InfoStyle.Render("Enter your system password below")
+
+		// Add a note if the password was incorrect
+		if strings.Contains(m.installError, "incorrect") {
+			passwordInstructions = ErrorStyle.Render("Incorrect password. Please try again.")
+		}
 
 		// Display password with visual feedback
 		passwordDisplay := ""
@@ -467,7 +495,8 @@ func (m Model) installationView() string {
 			}
 		}
 
-		// Create a more visible password input box
+		// Create a more visible password input box with cursor
+		cursor := "█"
 		passwordBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(warningColor).
@@ -475,7 +504,7 @@ func (m Model) installationView() string {
 			MarginTop(1).
 			MarginBottom(1).
 			Width(50).
-			Render(BaseStyle.Render("Password: " + passwordDisplay))
+			Render(BaseStyle.Render("Password: " + passwordDisplay + cursor))
 
 		visibilityToggle := ""
 		if m.passwordVisible {
@@ -484,9 +513,42 @@ func (m Model) installationView() string {
 			visibilityToggle = DimStyle.Render("[Tab] Show password")
 		}
 
-		passwordHint := DimStyle.Render("[Enter] Submit password")
+		passwordHint := DimStyle.Render("[Enter] Submit password   [Esc] Cancel")
 
-		passwordSection = "\n\n" + passwordPrompt + "\n" + passwordBox + "\n" + visibilityToggle + " " + passwordHint
+		passwordSection = "\n\n" + passwordPrompt + "\n" + passwordInstructions + "\n" +
+			passwordBox + "\n" + visibilityToggle + " " + passwordHint
+	}
+
+	// Conflict resolution
+	var conflictSection string
+	if m.hasConflict {
+		conflictPrompt := WarningStyle.Render("Package conflict detected:")
+
+		// Create a conflict message box
+		conflictBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(warningColor).
+			Padding(1).
+			MarginTop(1).
+			MarginBottom(1).
+			Width(60).
+			Render(BaseStyle.Render(m.conflictMessage))
+
+		// Create yes/no buttons
+		yesButton := ButtonStyle.Render("Yes")
+		noButton := ButtonStyle.Render("No")
+
+		if m.conflictChoice {
+			yesButton = ActiveButtonStyle.Render("Yes")
+		} else {
+			noButton = ActiveButtonStyle.Render("No")
+		}
+
+		buttons := yesButton + " " + noButton
+		navigationHint := DimStyle.Render("[←/→] Navigate   [Enter] Confirm")
+
+		conflictSection = "\n\n" + conflictPrompt + "\n" + conflictBox + "\n" +
+			"Proceed with installation? " + buttons + "\n" + navigationHint
 	}
 
 	// Installation complete
@@ -503,7 +565,7 @@ func (m Model) installationView() string {
 				progressBar+"\n\n"+
 				BaseStyle.Render("Current package: "+current)+"\n"+
 				errorMsg,
-		) + passwordSection + "\n\n" + completeMsg
+		) + passwordSection + conflictSection + "\n\n" + completeMsg
 }
 
 // updateInstallationPage updates the installation page
@@ -517,13 +579,19 @@ func (m Model) updateInstallationPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.awaitingPassword {
+		// Handle all key inputs for password entry
 		switch msg.Type {
 		case tea.KeyRunes:
+			// Add typed characters to password
 			m.passwordInput += string(msg.Runes)
 		case tea.KeyBackspace:
+			// Remove last character on backspace
 			if len(m.passwordInput) > 0 {
 				m.passwordInput = m.passwordInput[:len(m.passwordInput)-1]
 			}
+		case tea.KeyDelete:
+			// Clear the entire password on delete
+			m.passwordInput = ""
 		case tea.KeyEnter:
 			// Only submit if password is not empty
 			if len(m.passwordInput) > 0 {
@@ -540,6 +608,9 @@ func (m Model) updateInstallationPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						m.aurHelper.SetSudoPassword(password)
 					}
 
+					// Clear any previous error
+					m.installError = ""
+
 					// Continue installation
 					return InstallProgressMsg{
 						Progress: m.installProgress,
@@ -551,7 +622,61 @@ func (m Model) updateInstallationPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyTab:
 			// Toggle password visibility
 			m.passwordVisible = !m.passwordVisible
+		case tea.KeyEsc:
+			// Cancel password input
+			m.awaitingPassword = false
+			m.passwordInput = ""
+
+			// Return to previous page if user cancels password input
+			return m, func() tea.Msg {
+				return InstallProgressMsg{
+					Progress: m.installProgress,
+					Total:    m.installTotal,
+					Current:  "Password input cancelled. Installation paused.",
+					Error:    "Password input cancelled by user.",
+				}
+			}
 		}
+
+		// Handle quit key separately
+		if key.Matches(msg, m.keyMap.Quit) {
+			return m, tea.Quit
+		}
+
+		return m, nil
+	}
+
+	// Handle conflict resolution
+	if m.hasConflict {
+		switch {
+		case key.Matches(msg, m.keyMap.Left):
+			m.conflictChoice = true // Yes
+		case key.Matches(msg, m.keyMap.Right):
+			m.conflictChoice = false // No
+		case key.Matches(msg, m.keyMap.Select):
+			// Submit choice and continue installation
+			return m, m.continueInstallation()
+		}
+
+		// Handle Escape key separately
+		if msg.Type == tea.KeyEsc {
+			// Cancel conflict resolution (default to No)
+			m.hasConflict = false
+			m.conflictChoice = false
+			return m, m.continueInstallation()
+		}
+
+		// Handle quit key separately
+		if key.Matches(msg, m.keyMap.Quit) {
+			return m, tea.Quit
+		}
+
+		return m, nil
+	}
+
+	// Handle other keys
+	if key.Matches(msg, m.keyMap.Quit) {
+		return m, tea.Quit
 	}
 
 	return m, nil

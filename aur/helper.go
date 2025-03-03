@@ -1,10 +1,18 @@
 package aur
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+)
+
+// Global variables to track the current package manager process
+var (
+	currentCmd *exec.Cmd
+	stdinPipe  io.WriteCloser
 )
 
 // Helper represents an AUR helper
@@ -63,18 +71,30 @@ func (h *Helper) Install() error {
 
 	// Build and install the package
 	var cmd *exec.Cmd
+
+	// If we have a sudo password, use sudo -S to read from stdin
 	if h.sudoPassword != "" {
-		// Use sudo with password
-		sudoCmd := fmt.Sprintf("echo '%s' | sudo -S makepkg -si --noconfirm", h.sudoPassword)
-		cmd = exec.Command("bash", "-c", sudoCmd)
+		// Use a bash script to handle the sudo password
+		cmd = exec.Command("bash", "-c", "echo '"+h.sudoPassword+"' | sudo -S makepkg -si --noconfirm")
 	} else {
 		// Use regular makepkg
 		cmd = exec.Command("makepkg", "-si", "--noconfirm")
 	}
 
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	// Capture output
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+
+	// Run the command
+	err = cmd.Run()
+	if err != nil {
+		// Check if the error is due to a sudo password issue
+		if strings.Contains(stderrBuf.String(), "[sudo]") ||
+			strings.Contains(stderrBuf.String(), "password for") {
+			return fmt.Errorf("sudo password required or incorrect: %w", err)
+		}
+
 		return fmt.Errorf("failed to build and install package: %w", err)
 	}
 
@@ -91,35 +111,77 @@ func (h *Helper) InstallPackages(packages []string) error {
 	args := []string{"-S", "--needed", "--noconfirm"}
 	args = append(args, packages...)
 
-	// Run the command
-	var cmd *exec.Cmd
-	if h.sudoPassword != "" {
-		// Use sudo with password - improved method to handle sudo
-		// First verify sudo access with the password
-		verifySudoCmd := fmt.Sprintf("echo '%s' | sudo -S -v", h.sudoPassword)
-		verifyCmd := exec.Command("bash", "-c", verifySudoCmd)
-		verifyCmd.Stdout = os.Stdout
-		verifyCmd.Stderr = os.Stderr
+	// Create a command that doesn't use sudo directly
+	// Let the AUR helper handle sudo permissions itself
+	cmd := exec.Command(h.Command, args...)
 
-		if err := verifyCmd.Run(); err != nil {
-			return fmt.Errorf("sudo authentication failed: %w", err)
-		}
-
-		// Now run the actual command
-		sudoCmd := fmt.Sprintf("echo '%s' | sudo -S %s %s",
-			h.sudoPassword,
-			h.Command,
-			strings.Join(args, " "))
-		cmd = exec.Command("bash", "-c", sudoCmd)
-	} else {
-		// Use regular command
-		cmd = exec.Command(h.Command, args...)
+	// Set up pipes for stdin, stdout, and stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Capture output
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
-	return cmd.Run()
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start command: %w", err)
+	}
+
+	// If we have a sudo password, send it immediately
+	// This will be buffered until sudo asks for it
+	if h.sudoPassword != "" {
+		fmt.Fprintf(stdin, "%s\n", h.sudoPassword)
+	}
+
+	// Close stdin to signal no more input
+	stdin.Close()
+
+	// Wait for the command to complete
+	err = cmd.Wait()
+
+	// Check for errors
+	if err != nil {
+		// Check if the error is due to a package conflict
+		if strings.Contains(stdoutBuf.String(), "conflict") ||
+			strings.Contains(stdoutBuf.String(), "Proceed with installation") ||
+			strings.Contains(stdoutBuf.String(), "[Y/n]") {
+			return fmt.Errorf("package conflict detected: %s", stdoutBuf.String())
+		}
+
+		// Check if the error is due to a package not found
+		if strings.Contains(stderrBuf.String(), "target not found") {
+			return fmt.Errorf("package not found: %w", err)
+		}
+
+		// Check if the error is due to a sudo password prompt
+		if strings.Contains(stderrBuf.String(), "[sudo]") ||
+			strings.Contains(stderrBuf.String(), "password for") {
+			return fmt.Errorf("sudo password required or incorrect: %w", err)
+		}
+
+		// General error
+		return fmt.Errorf("failed to install packages: %w", err)
+	}
+
+	return nil
+}
+
+// SendInputToPackageManager sends input to the current package manager process
+func SendInputToPackageManager(input string) error {
+	if stdinPipe == nil {
+		return fmt.Errorf("no active package manager process")
+	}
+
+	_, err := stdinPipe.Write([]byte(input))
+	if err != nil {
+		return fmt.Errorf("failed to send input to package manager: %w", err)
+	}
+
+	return nil
 }
 
 // GetInstalledPackages returns a list of installed packages
