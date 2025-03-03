@@ -1,0 +1,522 @@
+package ui
+
+import (
+	"fmt"
+
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/nixev/hyprland-installer/pkg/aur"
+	"github.com/nixev/hyprland-installer/pkg/config"
+)
+
+// Page represents a page in the installer
+type Page int
+
+const (
+	WelcomePage Page = iota
+	AURHelperPage
+	PackageCategoriesPage
+	InstallationPage
+	CompletePage
+)
+
+// KeyMap defines the keybindings for the application
+type KeyMap struct {
+	Up     key.Binding
+	Down   key.Binding
+	Left   key.Binding
+	Right  key.Binding
+	Select key.Binding
+	Back   key.Binding
+	Quit   key.Binding
+	Help   key.Binding
+	Tab    key.Binding
+}
+
+// DefaultKeyMap returns the default keybindings
+func DefaultKeyMap() KeyMap {
+	return KeyMap{
+		Up: key.NewBinding(
+			key.WithKeys("up", "k"),
+			key.WithHelp("↑/k", "up"),
+		),
+		Down: key.NewBinding(
+			key.WithKeys("down", "j"),
+			key.WithHelp("↓/j", "down"),
+		),
+		Left: key.NewBinding(
+			key.WithKeys("left", "h"),
+			key.WithHelp("←/h", "left"),
+		),
+		Right: key.NewBinding(
+			key.WithKeys("right", "l"),
+			key.WithHelp("→/l", "right"),
+		),
+		Select: key.NewBinding(
+			key.WithKeys("enter", " "),
+			key.WithHelp("enter/space", "select"),
+		),
+		Back: key.NewBinding(
+			key.WithKeys("esc"),
+			key.WithHelp("esc", "back"),
+		),
+		Quit: key.NewBinding(
+			key.WithKeys("ctrl+c", "q"),
+			key.WithHelp("ctrl+c/q", "quit"),
+		),
+		Help: key.NewBinding(
+			key.WithKeys("?"),
+			key.WithHelp("?", "help"),
+		),
+		Tab: key.NewBinding(
+			key.WithKeys("tab"),
+			key.WithHelp("tab", "next"),
+		),
+	}
+}
+
+// Model represents the state of the application
+type Model struct {
+	keyMap           KeyMap
+	help             help.Model
+	spinner          spinner.Model
+	width            int
+	height           int
+	page             Page
+	aurHelperOptions []string
+	aurHelperIndex   int
+	aurHelper        *aur.Helper
+	categories       []config.PackageCategory
+	categoryIndex    int
+	optionIndex      int
+	selectedOptions  map[string][]string
+	installProgress  int
+	installTotal     int
+	installCurrent   string
+	installError     string
+	installComplete  bool
+	showHelp         bool
+}
+
+// NewModel creates a new model
+func NewModel() Model {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+
+	return Model{
+		keyMap:           DefaultKeyMap(),
+		help:             help.New(),
+		spinner:          s,
+		page:             WelcomePage,
+		aurHelperOptions: config.AURHelpers,
+		aurHelperIndex:   0,
+		categories:       config.PackageCategories,
+		categoryIndex:    0,
+		optionIndex:      0,
+		selectedOptions:  make(map[string][]string),
+		installProgress:  0,
+		installTotal:     0,
+		installCurrent:   "",
+		installError:     "",
+		installComplete:  false,
+		showHelp:         false,
+	}
+}
+
+// Init initializes the model
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(
+		m.spinner.Tick,
+	)
+}
+
+// Update updates the model
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch {
+		case key.Matches(msg, m.keyMap.Quit):
+			return m, tea.Quit
+		case key.Matches(msg, m.keyMap.Help):
+			m.showHelp = !m.showHelp
+			return m, nil
+		}
+
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
+
+		switch m.page {
+		case WelcomePage:
+			return m.updateWelcomePage(msg)
+		case AURHelperPage:
+			return m.updateAURHelperPage(msg)
+		case PackageCategoriesPage:
+			return m.updatePackageCategoriesPage(msg)
+		case InstallationPage:
+			return m.updateInstallationPage(msg)
+		case CompletePage:
+			return m.updateCompletePage(msg)
+		}
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.help.Width = msg.Width
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
+	case InstallProgressMsg:
+		return m.handleInstallProgress(msg)
+	}
+
+	m.spinner, cmd = m.spinner.Update(msg)
+	cmds = append(cmds, cmd)
+
+	return m, tea.Batch(cmds...)
+}
+
+// View renders the model
+func (m Model) View() string {
+	if m.showHelp {
+		return m.helpView()
+	}
+
+	var s string
+	switch m.page {
+	case WelcomePage:
+		s = m.welcomeView()
+	case AURHelperPage:
+		s = m.aurHelperView()
+	case PackageCategoriesPage:
+		s = m.packageCategoriesView()
+	case InstallationPage:
+		s = m.installationView()
+	case CompletePage:
+		s = m.completeView()
+	}
+
+	// Add help hint at the bottom
+	helpHint := DimStyle.Render("Press ? for help")
+	s += "\n\n" + helpHint
+
+	return s
+}
+
+// helpView renders the help view
+func (m Model) helpView() string {
+	return BoxStyle.Render(
+		TitleStyle.Render("Help") + "\n\n" +
+			m.help.View(m.keyMap),
+	)
+}
+
+// welcomeView renders the welcome view
+func (m Model) welcomeView() string {
+	title := TitleStyle.Render("Welcome to Hyprland Installer")
+	subtitle := SubtitleStyle.Render("This installer will help you set up Hyprland with the Lunaris configuration")
+
+	info := InfoStyle.Render("This installer will:") + "\n" +
+		BaseStyle.Render("1. Install an AUR helper of your choice") + "\n" +
+		BaseStyle.Render("2. Install required packages") + "\n" +
+		BaseStyle.Render("3. Install optional packages based on your selection") + "\n" +
+		BaseStyle.Render("4. Copy configuration files to your home directory")
+
+	button := ButtonStyle.Render("Press Enter to continue")
+
+	return title + "\n" + subtitle + "\n\n" + BoxStyle.Render(info) + "\n\n" + button
+}
+
+// updateWelcomePage updates the welcome page
+func (m Model) updateWelcomePage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keyMap.Select):
+		m.page = AURHelperPage
+	}
+	return m, nil
+}
+
+// aurHelperView renders the AUR helper selection view
+func (m Model) aurHelperView() string {
+	title := TitleStyle.Render("Select AUR Helper")
+	subtitle := SubtitleStyle.Render("Choose an AUR helper to install packages")
+
+	var options string
+	for i, helper := range m.aurHelperOptions {
+		option := helper
+		if i == m.aurHelperIndex {
+			option = SelectionStyle.Render(option)
+		} else {
+			option = BaseStyle.Render(option)
+		}
+		options += option + "\n"
+	}
+
+	info := InfoStyle.Render("The AUR helper will be used to install all packages")
+
+	button := ButtonStyle.Render("Press Enter to select")
+
+	return title + "\n" + subtitle + "\n\n" + BoxStyle.Render(options) + "\n\n" + info + "\n\n" + button
+}
+
+// updateAURHelperPage updates the AUR helper page
+func (m Model) updateAURHelperPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keyMap.Up):
+		m.aurHelperIndex = max(0, m.aurHelperIndex-1)
+	case key.Matches(msg, m.keyMap.Down):
+		m.aurHelperIndex = min(len(m.aurHelperOptions)-1, m.aurHelperIndex+1)
+	case key.Matches(msg, m.keyMap.Select):
+		m.aurHelper = aur.NewHelper(m.aurHelperOptions[m.aurHelperIndex])
+		m.page = PackageCategoriesPage
+
+		// Initialize selected options with defaults
+		for _, category := range m.categories {
+			for _, option := range category.Options {
+				if option.Default {
+					if _, ok := m.selectedOptions[category.Name]; !ok {
+						m.selectedOptions[category.Name] = []string{}
+					}
+					m.selectedOptions[category.Name] = append(m.selectedOptions[category.Name], option.Name)
+				}
+			}
+		}
+	case key.Matches(msg, m.keyMap.Back):
+		m.page = WelcomePage
+	}
+	return m, nil
+}
+
+// packageCategoriesView renders the package categories view
+func (m Model) packageCategoriesView() string {
+	title := TitleStyle.Render("Select Packages")
+	subtitle := SubtitleStyle.Render("Choose which packages to install")
+
+	// Render categories
+	var categories string
+	for i, category := range m.categories {
+		categoryName := category.Name
+		if i == m.categoryIndex {
+			categoryName = HighlightStyle.Render(categoryName)
+		} else {
+			categoryName = BaseStyle.Render(categoryName)
+		}
+		categories += categoryName + "\n"
+	}
+
+	// Render options for the selected category
+	var options string
+	if m.categoryIndex < len(m.categories) {
+		category := m.categories[m.categoryIndex]
+		options += SubtitleStyle.Render(category.Name) + "\n"
+		options += DimStyle.Render(category.Description) + "\n\n"
+
+		for i, option := range category.Options {
+			isSelected := false
+			if selectedOptions, ok := m.selectedOptions[category.Name]; ok {
+				for _, selectedOption := range selectedOptions {
+					if selectedOption == option.Name {
+						isSelected = true
+						break
+					}
+				}
+			}
+
+			optionText := RenderCheckbox(isSelected, option.Name)
+			if i == m.optionIndex {
+				optionText = SelectionStyle.Render(optionText)
+			} else {
+				optionText = BaseStyle.Render(optionText)
+			}
+			options += optionText + "\n"
+			options += DimStyle.Render("  "+option.Description) + "\n"
+		}
+	}
+
+	info := InfoStyle.Render("Use Tab to switch between categories and options")
+	button := ButtonStyle.Render("Press Enter to continue")
+
+	// Layout the view
+	leftPane := BoxStyle.Render(categories)
+	rightPane := BoxStyle.Render(options)
+
+	// Combine the panes
+	panes := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+
+	return title + "\n" + subtitle + "\n\n" + panes + "\n\n" + info + "\n\n" + button
+}
+
+// updatePackageCategoriesPage updates the package categories page
+func (m Model) updatePackageCategoriesPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keyMap.Tab):
+		// Toggle focus between categories and options
+		if m.optionIndex == -1 {
+			m.optionIndex = 0
+		} else {
+			m.optionIndex = -1
+		}
+	case key.Matches(msg, m.keyMap.Up):
+		if m.optionIndex == -1 {
+			// Navigate categories
+			m.categoryIndex = max(0, m.categoryIndex-1)
+		} else {
+			// Navigate options
+			m.optionIndex = max(0, m.optionIndex-1)
+		}
+	case key.Matches(msg, m.keyMap.Down):
+		if m.optionIndex == -1 {
+			// Navigate categories
+			m.categoryIndex = min(len(m.categories)-1, m.categoryIndex+1)
+		} else {
+			// Navigate options
+			category := m.categories[m.categoryIndex]
+			m.optionIndex = min(len(category.Options)-1, m.optionIndex+1)
+		}
+	case key.Matches(msg, m.keyMap.Select):
+		if m.optionIndex == -1 {
+			// If categories are focused, switch to options
+			m.optionIndex = 0
+		} else {
+			// Toggle option selection
+			category := m.categories[m.categoryIndex]
+			option := category.Options[m.optionIndex]
+
+			// Initialize the map entry if it doesn't exist
+			if _, ok := m.selectedOptions[category.Name]; !ok {
+				m.selectedOptions[category.Name] = []string{}
+			}
+
+			// Check if the option is already selected
+			isSelected := false
+			for i, selectedOption := range m.selectedOptions[category.Name] {
+				if selectedOption == option.Name {
+					// Remove the option
+					m.selectedOptions[category.Name] = append(
+						m.selectedOptions[category.Name][:i],
+						m.selectedOptions[category.Name][i+1:]...,
+					)
+					isSelected = true
+					break
+				}
+			}
+
+			// If not selected, add it
+			if !isSelected {
+				m.selectedOptions[category.Name] = append(m.selectedOptions[category.Name], option.Name)
+			}
+		}
+	case key.Matches(msg, m.keyMap.Back):
+		m.page = AURHelperPage
+	case key.Matches(msg, m.keyMap.Right):
+		// Start installation
+		m.page = InstallationPage
+		return m, m.startInstallation()
+	}
+	return m, nil
+}
+
+// installationView renders the installation view
+func (m Model) installationView() string {
+	title := TitleStyle.Render("Installing Packages")
+	subtitle := SubtitleStyle.Render("Please wait while packages are being installed")
+
+	// Progress information
+	progress := fmt.Sprintf("%d/%d", m.installProgress, m.installTotal)
+	progressBar := RenderProgressBar(50, int(float64(m.installProgress)/float64(m.installTotal)*100))
+
+	// Current package
+	current := m.spinner.View() + " " + m.installCurrent
+
+	// Error message
+	var errorMsg string
+	if m.installError != "" {
+		errorMsg = ErrorStyle.Render("Error: " + m.installError)
+	}
+
+	// Installation complete
+	var completeMsg string
+	if m.installComplete {
+		completeMsg = SuccessStyle.Render("Installation complete!")
+		button := ButtonStyle.Render("Press Enter to continue")
+		completeMsg += "\n\n" + button
+	}
+
+	return title + "\n" + subtitle + "\n\n" +
+		BoxStyle.Render(
+			BaseStyle.Render("Progress: "+progress)+"\n"+
+				progressBar+"\n\n"+
+				BaseStyle.Render("Current package: "+current)+"\n"+
+				errorMsg,
+		) + "\n\n" + completeMsg
+}
+
+// updateInstallationPage updates the installation page
+func (m Model) updateInstallationPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.installComplete {
+		switch {
+		case key.Matches(msg, m.keyMap.Select):
+			m.page = CompletePage
+		}
+	}
+	return m, nil
+}
+
+// completeView renders the complete view
+func (m Model) completeView() string {
+	title := TitleStyle.Render("Installation Complete")
+	subtitle := SuccessStyle.Render("Hyprland has been successfully installed!")
+
+	info := InfoStyle.Render("What's next?") + "\n" +
+		BaseStyle.Render("1. Log out of your current session") + "\n" +
+		BaseStyle.Render("2. Select Hyprland from your display manager") + "\n" +
+		BaseStyle.Render("3. Enjoy your new Hyprland setup!")
+
+	button := ButtonStyle.Render("Press Enter to exit")
+
+	return title + "\n" + subtitle + "\n\n" + BoxStyle.Render(info) + "\n\n" + button
+}
+
+// updateCompletePage updates the complete page
+func (m Model) updateCompletePage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keyMap.Select):
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// startInstallation starts the installation process
+func (m Model) startInstallation() tea.Cmd {
+	return func() tea.Msg {
+		// TODO: Implement the actual installation process
+		// This is a placeholder for now
+		return nil
+	}
+}
+
+// Helper functions
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
