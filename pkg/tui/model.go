@@ -141,7 +141,7 @@ type Model struct {
 func NewModel() Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(primaryColor)
+	s.Style = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
 
 	return Model{
 		keyMap:               DefaultKeyMap(),

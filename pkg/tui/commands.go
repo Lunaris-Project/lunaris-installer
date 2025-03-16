@@ -105,7 +105,7 @@ func (m *Model) continueInstallation() tea.Cmd {
 // installAURHelper installs the selected AUR helper
 func (m *Model) installAURHelper() tea.Cmd {
 	return func() tea.Msg {
-		// Update progress
+		// Update progress for starting AUR helper installation
 		m.installProgress++
 		progressMsg := NewInstallProgressMsg(
 			m.installProgress,
@@ -115,18 +115,68 @@ func (m *Model) installAURHelper() tea.Cmd {
 			nil,
 		)
 
-		// Install the AUR helper
-		err := m.aurHelper.Install()
-		if err != nil {
-			progressMsg.Error = err
-			return progressMsg
+		// Create a channel to send progress updates
+		errorCh := make(chan error, 1)
+		doneCh := make(chan bool, 1)
+
+		// Run the installation in a goroutine
+		go func() {
+			// Install the AUR helper
+			err := m.aurHelper.Install()
+			if err != nil {
+				errorCh <- err
+				return
+			}
+
+			// Signal completion
+			doneCh <- true
+		}()
+
+		// Set up a ticker to update the spinner
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		// Set up a timeout timer
+		timeout := time.NewTimer(30 * time.Second)
+		defer timeout.Stop()
+
+		// Wait for installation to complete or for progress updates
+		for {
+			select {
+			case err := <-errorCh:
+				progressMsg.Error = err
+				return progressMsg
+
+			case <-doneCh:
+				// Mark AUR helper as installed
+				m.aurHelperInstalled = true
+
+				// Continue with package installation
+				return m.continueInstallation()()
+
+			case <-ticker.C:
+				// Check if installation is complete
+				if m.aurHelper.IsInstalled() {
+					// Mark AUR helper as installed
+					m.aurHelperInstalled = true
+
+					// Continue with package installation
+					return m.continueInstallation()()
+				}
+
+			case <-timeout.C:
+				// If no updates for 30 seconds, assume installation is still in progress
+				// but send an update to refresh the UI
+				progressMsg = NewInstallProgressMsg(
+					m.installProgress,
+					m.totalSteps,
+					fmt.Sprintf("Still installing %s... (this may take a while)", m.aurHelper.Name),
+					"AUR Helper Installation",
+					nil,
+				)
+				return progressMsg
+			}
 		}
-
-		// Mark AUR helper as installed
-		m.aurHelperInstalled = true
-
-		// Continue with package installation
-		return m.continueInstallation()()
 	}
 }
 

@@ -66,11 +66,16 @@ func (h *Helper) Install() error {
 	defer os.Chdir(originalDir)
 
 	// Clone the AUR helper repository
+	fmt.Printf("Cloning %s repository...\n", h.Name)
 	cloneCmd := exec.Command("git", "clone", fmt.Sprintf("https://aur.archlinux.org/%s.git", h.Name))
-	cloneCmd.Stdout = os.Stdout
-	cloneCmd.Stderr = os.Stderr
+	
+	// Capture output instead of sending directly to stdout/stderr
+	var cloneOutput bytes.Buffer
+	cloneCmd.Stdout = &cloneOutput
+	cloneCmd.Stderr = &cloneOutput
+	
 	if err := cloneCmd.Run(); err != nil {
-		return fmt.Errorf("failed to clone repository: %w", err)
+		return fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, cloneOutput.String())
 	}
 
 	// Change to the AUR helper directory
@@ -79,14 +84,18 @@ func (h *Helper) Install() error {
 	}
 
 	// Build and install the AUR helper
+	fmt.Printf("Building and installing %s...\n", h.Name)
 	var cmd *exec.Cmd
 	if h.sudoPassword != "" {
 		cmd = exec.Command("sudo", "-S", "makepkg", "-si", "--noconfirm")
 	} else {
 		cmd = exec.Command("makepkg", "-si", "--noconfirm")
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	
+	// Capture output instead of sending directly to stdout/stderr
+	var buildOutput bytes.Buffer
+	cmd.Stdout = &buildOutput
+	cmd.Stderr = &buildOutput
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -103,8 +112,9 @@ func (h *Helper) Install() error {
 	}
 	stdin.Close()
 
+	// Wait for the command to complete
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("failed to build and install package: %w", err)
+		return fmt.Errorf("failed to build and install package: %w\nOutput: %s", err, buildOutput.String())
 	}
 
 	return nil

@@ -99,13 +99,15 @@ func RenderProgressBar(width, percent int) string {
 	// Calculate the width of the filled portion
 	filledWidth := (width * percent) / 100
 
-	// Create the filled and empty portions
+	// Create the filled and empty portions with more visually appealing characters
 	filled := strings.Repeat("█", filledWidth)
-	empty := strings.Repeat("░", width-filledWidth)
+	empty := strings.Repeat("▒", width-filledWidth)
 
-	// Combine and style
-	bar := lipgloss.NewStyle().Foreground(primaryColor).Render(filled) +
-		lipgloss.NewStyle().Foreground(dimmedColor).Render(empty)
+	// Add a border to the progress bar
+	bar := "│" +
+		lipgloss.NewStyle().Foreground(primaryColor).Render(filled) +
+		lipgloss.NewStyle().Foreground(dimmedColor).Render(empty) +
+		"│"
 
 	return bar
 }

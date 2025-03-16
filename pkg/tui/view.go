@@ -276,25 +276,58 @@ func (m Model) renderInstallationPage() string {
 		progressPercentage = (m.installProgress * 100) / m.totalSteps
 	}
 
+	// Create a more visually appealing progress bar
 	progressBar := RenderProgressBar(m.width-20, progressPercentage)
 	progressText := fmt.Sprintf("%d/%d (%d%%)", m.installProgress, m.totalSteps, progressPercentage)
 
-	// Render current step
+	// Render current step with animated spinner
 	var currentStep string
 	if m.errorMessage != "" {
 		currentStep = ErrorStyle.Render(m.errorMessage)
 	} else {
+		// Use a more visible spinner
 		spinnerText := m.spinner.View()
-		currentStep = fmt.Sprintf("%s %s", spinnerText, m.currentStep)
+
+		// Add some color and styling to the current step
+		stepText := fmt.Sprintf("%s", m.currentStep)
+		if m.installPhase == "AUR Helper Installation" {
+			stepText = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(stepText)
+		} else {
+			stepText = InfoStyle.Render(stepText)
+		}
+
+		currentStep = fmt.Sprintf("%s %s", spinnerText, stepText)
 	}
 
-	// Render phase
-	phase := SubtitleStyle.Render(m.installPhase)
+	// Render phase with better styling
+	phase := SubtitleStyle.Copy().
+		Foreground(primaryColor).
+		Bold(true).
+		Render(m.installPhase)
+
+	// Add a more descriptive message based on the current phase
+	var phaseDescription string
+	switch m.installPhase {
+	case "AUR Helper Installation":
+		phaseDescription = "Installing the AUR helper to enable access to the Arch User Repository"
+	case "Package Installation":
+		phaseDescription = "Installing selected packages from official repositories and AUR"
+	case "Backup":
+		phaseDescription = "Creating backups of your configuration files"
+	case "Post-Installation":
+		phaseDescription = "Setting up configuration files and finalizing installation"
+	default:
+		phaseDescription = "Preparing your system"
+	}
+
+	phaseInfo := InfoStyle.Render(phaseDescription)
 
 	return lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
+		"",
 		phase,
+		phaseInfo,
 		"",
 		progressBar,
 		progressText,
