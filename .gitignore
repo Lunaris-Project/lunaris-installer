@@ -21,6 +21,7 @@ go.work
 # IDE files
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo
 
