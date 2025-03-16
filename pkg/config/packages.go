@@ -196,4 +196,6 @@ var ConfigDirs = []string{
 	".config/foot",
 	".fonts",
 	".local/bin",
+	".ags",
+	"Pictures",
 }

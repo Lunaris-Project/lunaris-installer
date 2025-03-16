@@ -256,25 +256,42 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 			return progressMsg
 		}
 
-		// Backup .config directory
-		configDir := filepath.Join(homeDir, ".config")
-		configBackupDir := filepath.Join(backupDir, ".config.bak")
-		if _, err := os.Stat(configDir); err == nil {
-			err = utils.CopyDir(configDir, configBackupDir)
-			if err != nil {
-				progressMsg.Error = fmt.Errorf("failed to backup .config directory: %w", err)
-				return progressMsg
-			}
+		// Directories to backup
+		dirsToBackup := []struct {
+			source      string
+			destination string
+		}{
+			{".config", ".config.bak"},
+			{".local", ".local.bak"},
+			{".ags", ".ags.bak"},
+			{".fonts", ".fonts.bak"},
+			{"Pictures", "Pictures.bak"},
 		}
 
-		// Backup .local directory
-		localDir := filepath.Join(homeDir, ".local")
-		localBackupDir := filepath.Join(backupDir, ".local.bak")
-		if _, err := os.Stat(localDir); err == nil {
-			err = utils.CopyDir(localDir, localBackupDir)
-			if err != nil {
-				progressMsg.Error = fmt.Errorf("failed to backup .local directory: %w", err)
-				return progressMsg
+		// Backup each directory if it exists
+		for _, dir := range dirsToBackup {
+			sourceDir := filepath.Join(homeDir, dir.source)
+			destDir := filepath.Join(backupDir, dir.destination)
+
+			// Check if the source directory exists
+			if _, err := os.Stat(sourceDir); err == nil {
+				// Create parent directories if needed
+				err = os.MkdirAll(filepath.Dir(destDir), 0755)
+				if err != nil {
+					progressMsg.Error = fmt.Errorf("failed to create backup directory for %s: %w", dir.source, err)
+					return progressMsg
+				}
+
+				// Copy the directory
+				err = utils.CopyDir(sourceDir, destDir)
+				if err != nil {
+					progressMsg.Error = fmt.Errorf("failed to backup %s directory: %w", dir.source, err)
+					return progressMsg
+				}
+
+				fmt.Printf("Backed up %s to %s\n", dir.source, dir.destination)
+			} else {
+				fmt.Printf("Skipping backup of %s: directory does not exist\n", dir.source)
 			}
 		}
 

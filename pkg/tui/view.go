@@ -313,7 +313,7 @@ func (m Model) renderInstallationPage() string {
 	case "Package Installation":
 		phaseDescription = "Installing selected packages from official repositories and AUR"
 	case "Backup":
-		phaseDescription = "Creating backups of your configuration files"
+		phaseDescription = "Creating backups of your configuration files and directories"
 	case "Post-Installation":
 		phaseDescription = "Setting up configuration files and finalizing installation"
 	default:
@@ -367,7 +367,7 @@ func (m Model) renderDotfilesConfirmation() string {
 // renderBackupConfirmation renders the backup confirmation prompt
 func (m Model) renderBackupConfirmation() string {
 	title := TitleStyle.Render("Backup Configuration")
-	message := BoxStyle.Render("Do you want to backup your existing .config and .local directories before installing dotfiles?")
+	message := BoxStyle.Render("Do you want to backup your existing configuration directories before installing dotfiles?\n\nThe following directories will be backed up if they exist:\n• .config\n• .local\n• .ags\n• .fonts\n• Pictures\n\nBackups will be stored in ~/Lunaric-User-Backup/")
 
 	// Render options
 	options := []string{
@@ -395,12 +395,14 @@ func (m Model) renderBackupConfirmation() string {
 // renderCompletePage renders the complete page
 func (m Model) renderCompletePage() string {
 	title := TitleStyle.Render("Installation Complete")
-	message := SuccessStyle.Render("Hyprland has been successfully installed on your system!")
+	message := SuccessStyle.Render("Lunaris has been successfully installed on your system!")
 
 	// Render instructions
 	instructions := []string{
 		"• Log out of your current session",
 		"• Select Hyprland from your display manager",
+		"• Your configuration files have been installed",
+		"• If you chose to backup, your original files are in ~/Lunaric-User-Backup/",
 		"• Enjoy your new desktop environment!",
 	}
 
