@@ -106,73 +106,86 @@ func (m Model) renderConflictResolution() string {
 	)
 }
 
-// renderSystemMessages renders the system messages box
+// renderSystemMessages renders the system messages box efficiently
 func (m Model) renderSystemMessages() string {
 	if len(m.systemMessages) == 0 {
-		return ""
+		// Empty box with placeholder text
+		return lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(dimmedColor).
+			Padding(1, 2).
+			Width(m.width - 20).
+			Height(6).
+			Render(DimStyle.Render("System messages will appear here..."))
 	}
 
-	// Limit the number of messages to display to reduce memory usage
-	maxMessages := 5
+	// Get the last few messages (up to 5)
 	startIdx := 0
-	if len(m.systemMessages) > maxMessages {
-		startIdx = len(m.systemMessages) - maxMessages
+	if len(m.systemMessages) > 5 {
+		startIdx = len(m.systemMessages) - 5
 	}
 
-	// Build the messages string more efficiently
-	var b strings.Builder
-	b.WriteString("\n\n")
-	b.WriteString(lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#874BFD")).
-		Padding(0, 1).
-		Render("System Messages:"))
-	b.WriteString("\n")
+	recentMessages := m.systemMessages[startIdx:]
 
-	// Only render the last few messages to save memory
-	for i := startIdx; i < len(m.systemMessages); i++ {
-		msg := m.systemMessages[i]
-		style := lipgloss.NewStyle()
-
-		// Apply color based on message content
+	// Format messages with timestamps and colors
+	formattedMessages := make([]string, 0, len(recentMessages))
+	for _, msg := range recentMessages {
+		// Colorize based on message content
+		var formattedMsg string
 		switch {
-		case strings.Contains(strings.ToLower(msg), "error"):
-			style = style.Foreground(lipgloss.Color("#FF0000"))
-		case strings.Contains(strings.ToLower(msg), "warning"):
-			style = style.Foreground(lipgloss.Color("#FFFF00"))
-		case strings.Contains(strings.ToLower(msg), "success"):
-			style = style.Foreground(lipgloss.Color("#00FF00"))
+		case strings.Contains(strings.ToLower(msg), "error") || strings.Contains(strings.ToLower(msg), "failed") || strings.Contains(strings.ToLower(msg), "conflict"):
+			formattedMsg = ErrorStyle.Render(msg)
+		case strings.Contains(strings.ToLower(msg), "success") || strings.Contains(strings.ToLower(msg), "complete"):
+			formattedMsg = SuccessStyle.Render(msg)
+		case strings.Contains(strings.ToLower(msg), "installing") || strings.Contains(strings.ToLower(msg), "building"):
+			formattedMsg = InfoStyle.Render(msg)
 		default:
-			style = style.Foreground(lipgloss.Color("#FFFFFF"))
+			formattedMsg = BaseStyle.Render(msg)
 		}
-
-		b.WriteString(style.Render(msg))
-		b.WriteString("\n")
+		formattedMessages = append(formattedMessages, formattedMsg)
 	}
 
-	return b.String()
+	messagesText := strings.Join(formattedMessages, "\n")
+
+	// Create a scrollable box with system messages
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(dimmedColor).
+		Padding(1, 2).
+		Width(m.width - 20).
+		Height(6).
+		Render(messagesText)
 }
 
 // renderWelcomePage renders the welcome page
 func (m Model) renderWelcomePage() string {
-	var b strings.Builder
+	title := TitleStyle.Render("Welcome to Lunaris Installer")
+	subtitle := SubtitleStyle.Render("This installer will help you set up Lunaris on your system")
 
-	b.WriteString(lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FAFAFA")).
-		Background(lipgloss.Color("#7D56F4")).
-		Padding(0, 1).
-		Render("Welcome to Lunaris Installer"))
+	// Render instructions
+	instructions := []string{
+		"• Select an AUR helper to use for installation",
+		"• Choose which packages to install",
+		"• The installer will handle the rest",
+	}
 
-	b.WriteString("\n\n")
+	instructionsStr := lipgloss.JoinVertical(
+		lipgloss.Left,
+		instructions...,
+	)
 
-	b.WriteString("This installer will help you install Lunaris on your system.\n\n")
+	// Render button
+	button := m.renderButton("Continue", true)
 
-	b.WriteString(lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FAFAFA")).
-		Render("Press Enter to continue..."))
-
-	return b.String()
+	return lipgloss.JoinVertical(
+		lipgloss.Center,
+		title,
+		subtitle,
+		"",
+		BoxStyle.Render(instructionsStr),
+		"",
+		button,
+	)
 }
 
 // renderAURHelperPage renders the AUR helper selection page
@@ -296,53 +309,143 @@ func (m Model) renderPackageCategoriesPage() string {
 
 // renderInstallationPage renders the installation page
 func (m Model) renderInstallationPage() string {
-	var b strings.Builder
+	title := TitleStyle.Render("Installing Lunaris")
 
-	b.WriteString(lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FAFAFA")).
-		Background(lipgloss.Color("#7D56F4")).
-		Padding(0, 1).
-		Render("Installing Lunaris"))
+	// If we're in the dotfiles confirmation phase
+	if m.installPhase == "dotfiles_confirmation" {
+		return m.renderDotfilesConfirmation()
+	}
 
-	b.WriteString("\n\n")
+	// If we're in the backup confirmation phase
+	if m.installPhase == "backup_confirmation" {
+		return m.renderBackupConfirmation()
+	}
 
-	// Render progress information
+	// Render progress
 	progressPercentage := 0
 	if m.totalSteps > 0 {
 		progressPercentage = (m.installProgress * 100) / m.totalSteps
 	}
 
-	// Create a progress bar
-	progressBar := fmt.Sprintf("[%s%s] %d%%",
-		strings.Repeat("=", progressPercentage/5),
-		strings.Repeat(" ", 20-progressPercentage/5),
-		progressPercentage)
+	// Create a more visually appealing progress bar
+	progressBar := RenderProgressBar(m.width-20, progressPercentage)
+	progressText := fmt.Sprintf("%d/%d (%d%%)", m.installProgress, m.totalSteps, progressPercentage)
 
-	b.WriteString(progressBar)
+	// Render current step with animated spinner
+	var currentStep string
+	if m.errorMessage != "" {
+		currentStep = ErrorStyle.Render(m.errorMessage)
+	} else {
+		// Use a more visible spinner
+		spinnerText := m.spinner.View()
 
-	// Render system messages
-	b.WriteString(m.renderSystemMessages())
+		// Add some color and styling to the current step
+		stepText := fmt.Sprintf("%s", m.currentStep)
+		if m.installPhase == "AUR Helper Installation" {
+			stepText = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(stepText)
+		} else {
+			stepText = InfoStyle.Render(stepText)
+		}
 
-	b.WriteString("\n\n")
-
-	if m.installComplete {
-		b.WriteString(lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#00FF00")).
-			Render("Installation complete! "))
-
-		b.WriteString(lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FAFAFA")).
-			Render("You can now reboot your system and select Lunaris from your display manager."))
-
-		b.WriteString("\n\n")
-
-		b.WriteString(lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FAFAFA")).
-			Render("Press Ctrl+C to exit..."))
+		currentStep = fmt.Sprintf("%s %s", spinnerText, stepText)
 	}
 
-	return b.String()
+	// Render phase with better styling
+	phase := SubtitleStyle.Copy().
+		Foreground(primaryColor).
+		Bold(true).
+		Render(m.installPhase)
+
+	// Add a more descriptive message based on the current phase
+	var phaseDescription string
+	switch m.installPhase {
+	case "AUR Helper Installation":
+		phaseDescription = "Installing the AUR helper to enable access to the Arch User Repository"
+	case "Package Installation":
+		phaseDescription = "Installing selected packages from official repositories and AUR"
+	case "Backup":
+		phaseDescription = "Creating backups of your configuration files and directories"
+	case "Post-Installation":
+		phaseDescription = "Setting up configuration files and finalizing installation"
+	default:
+		phaseDescription = "Preparing your system"
+	}
+
+	phaseInfo := InfoStyle.Render(phaseDescription)
+
+	// Render system messages box
+	systemMessagesBox := m.renderSystemMessages()
+
+	return lipgloss.JoinVertical(
+		lipgloss.Center,
+		title,
+		"",
+		phase,
+		phaseInfo,
+		"",
+		progressBar,
+		progressText,
+		"",
+		currentStep,
+		"",
+		systemMessagesBox,
+	)
+}
+
+// renderDotfilesConfirmation renders the dotfiles confirmation prompt
+func (m Model) renderDotfilesConfirmation() string {
+	title := TitleStyle.Render("Dotfiles Installation")
+	message := BoxStyle.Render("Do you want to install the dotfiles?")
+
+	// Render options
+	options := []string{
+		m.renderOption("Yes", m.dotfilesConfirmation),
+		m.renderOption("No", !m.dotfilesConfirmation),
+	}
+
+	optionsStr := lipgloss.JoinVertical(lipgloss.Left, options...)
+
+	// Render instructions
+	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm")
+
+	return lipgloss.JoinVertical(
+		lipgloss.Center,
+		title,
+		"",
+		message,
+		"",
+		optionsStr,
+		"",
+		instructions,
+	)
+}
+
+// renderBackupConfirmation renders the backup confirmation prompt
+func (m Model) renderBackupConfirmation() string {
+	title := TitleStyle.Render("Backup Configuration")
+	message := BoxStyle.Render("Do you want to backup your existing configuration directories before installing dotfiles?\n\nThe following directories will be backed up if they exist:\n• .config\n• .local\n• .ags\n• .fonts\n• Pictures\n\nBackups will be stored in ~/Lunaric-User-Backup/")
+
+	// Render options
+	options := []string{
+		m.renderOption("Yes", m.backupConfirmation),
+		m.renderOption("No", !m.backupConfirmation),
+	}
+
+	optionsStr := lipgloss.JoinVertical(lipgloss.Left, options...)
+
+	// Render instructions
+	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm")
+
+	return lipgloss.JoinVertical(
+		lipgloss.Center,
+		title,
+		"",
+		message,
+		"",
+		optionsStr,
+		"",
+		instructions,
+	)
 }
 
 // renderCompletePage renders the complete page
