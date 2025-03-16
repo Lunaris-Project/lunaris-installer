@@ -247,7 +247,45 @@ func (m Model) updatePackageCategoriesPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 
 // updateInstallationPage updates the installation page
 func (m Model) updateInstallationPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// No key handlers for installation page
+	// Handle dotfiles confirmation
+	if m.installPhase == "dotfiles_confirmation" {
+		switch msg.Type {
+		case tea.KeyUp, tea.KeyDown:
+			// Toggle between Yes and No
+			m.dotfilesConfirmation = !m.dotfilesConfirmation
+			return m, nil
+
+		case tea.KeyEnter:
+			// Confirm selection
+			return m, m.continueInstallation()
+
+		case tea.KeyEsc:
+			// Cancel installation
+			m.page = PackageCategoriesPage
+			return m, nil
+		}
+	}
+
+	// Handle backup confirmation
+	if m.installPhase == "backup_confirmation" {
+		switch msg.Type {
+		case tea.KeyUp, tea.KeyDown:
+			// Toggle between Yes and No
+			m.backupConfirmation = !m.backupConfirmation
+			return m, nil
+
+		case tea.KeyEnter:
+			// Confirm selection
+			return m, m.continueInstallation()
+
+		case tea.KeyEsc:
+			// Cancel installation
+			m.page = PackageCategoriesPage
+			return m, nil
+		}
+	}
+
+	// No key handlers for other installation phases
 	return m, nil
 }
 

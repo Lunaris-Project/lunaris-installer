@@ -21,10 +21,13 @@ func (m *Model) startInstallation() tea.Cmd {
 		m.packagesToInstall = m.getSelectedPackages()
 
 		// Calculate total steps:
+		// - Install AUR helper (1 step)
 		// - Number of packages to install
+		// - Ask for dotfiles installation (1 step)
+		// - Backup directories (1 step if user chooses to backup)
 		// - Clone repository (1 step)
 		// - Create directories and copy files (1 step per directory)
-		m.totalSteps = len(m.packagesToInstall) + 1 + len(config.ConfigDirs)
+		m.totalSteps = 1 + len(m.packagesToInstall) + 1 + 1 + 1 + len(config.ConfigDirs)
 		m.installProgress = 0
 
 		// Send initial progress message
@@ -35,16 +38,6 @@ func (m *Model) startInstallation() tea.Cmd {
 			"Preparation",
 			nil,
 		)
-
-		// Check if AUR helper is installed
-		if !m.aurHelper.IsInstalled() {
-			// Install AUR helper
-			err := m.aurHelper.Install()
-			if err != nil {
-				progressMsg.Error = err
-				return progressMsg
-			}
-		}
 
 		// Request sudo password if needed
 		m.awaitingPassword = true
@@ -70,13 +63,70 @@ func (m *Model) continueInstallation() tea.Cmd {
 			}
 		}
 
+		// If we're in the dotfiles confirmation phase
+		if m.installPhase == "dotfiles_confirmation" {
+			if m.dotfilesConfirmation {
+				// User wants to install dotfiles
+				m.installPhase = "backup_confirmation"
+				return NewBackupConfirmationMsg()
+			} else {
+				// User doesn't want to install dotfiles, skip to completion
+				return NewCompleteMsg()
+			}
+		}
+
+		// If we're in the backup confirmation phase
+		if m.installPhase == "backup_confirmation" {
+			if m.backupConfirmation {
+				// User wants to backup, proceed with backup
+				return m.backupConfigDirs()()
+			} else {
+				// User doesn't want to backup, proceed with dotfiles installation
+				return m.installDotfiles()()
+			}
+		}
+
+		// If we need to install the AUR helper first
+		if !m.aurHelperInstalled {
+			return m.installAURHelper()()
+		}
+
 		// If we have packages to install, install the next one
 		if len(m.packagesToInstall) > 0 {
 			return m.installNextPackage()()
 		}
 
-		// If we're done with packages, proceed to post-installation
-		return m.handlePostInstallation()()
+		// If we're done with packages, proceed to ask about dotfiles installation
+		m.installPhase = "dotfiles_confirmation"
+		return NewDotfilesConfirmationMsg()
+	}
+}
+
+// installAURHelper installs the selected AUR helper
+func (m *Model) installAURHelper() tea.Cmd {
+	return func() tea.Msg {
+		// Update progress
+		m.installProgress++
+		progressMsg := NewInstallProgressMsg(
+			m.installProgress,
+			m.totalSteps,
+			fmt.Sprintf("Installing AUR helper: %s...", m.aurHelper.Name),
+			"AUR Helper Installation",
+			nil,
+		)
+
+		// Install the AUR helper
+		err := m.aurHelper.Install()
+		if err != nil {
+			progressMsg.Error = err
+			return progressMsg
+		}
+
+		// Mark AUR helper as installed
+		m.aurHelperInstalled = true
+
+		// Continue with package installation
+		return m.continueInstallation()()
 	}
 }
 
@@ -84,7 +134,9 @@ func (m *Model) continueInstallation() tea.Cmd {
 func (m *Model) installNextPackage() tea.Cmd {
 	return func() tea.Msg {
 		if len(m.packagesToInstall) == 0 {
-			return m.handlePostInstallation()()
+			// If we're done with packages, proceed to ask about dotfiles installation
+			m.installPhase = "dotfiles_confirmation"
+			return NewDotfilesConfirmationMsg()
 		}
 
 		// Get the next package
@@ -121,7 +173,69 @@ func (m *Model) installNextPackage() tea.Cmd {
 			return m.installNextPackage()()
 		}
 
-		// Otherwise, proceed to post-installation
+		// If we're done with packages, proceed to ask about dotfiles installation
+		m.installPhase = "dotfiles_confirmation"
+		return NewDotfilesConfirmationMsg()
+	}
+}
+
+// backupConfigDirs backs up the user's .config and .local directories
+func (m *Model) backupConfigDirs() tea.Cmd {
+	return func() tea.Msg {
+		// Update progress
+		m.installProgress++
+		progressMsg := NewInstallProgressMsg(
+			m.installProgress,
+			m.totalSteps,
+			"Backing up configuration directories...",
+			"Backup",
+			nil,
+		)
+
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			progressMsg.Error = fmt.Errorf("failed to get home directory: %w", err)
+			return progressMsg
+		}
+
+		// Create the backup directory
+		backupDir := filepath.Join(homeDir, "Lunaric-User-Backup")
+		err = os.MkdirAll(backupDir, 0755)
+		if err != nil {
+			progressMsg.Error = fmt.Errorf("failed to create backup directory: %w", err)
+			return progressMsg
+		}
+
+		// Backup .config directory
+		configDir := filepath.Join(homeDir, ".config")
+		configBackupDir := filepath.Join(backupDir, ".config.bak")
+		if _, err := os.Stat(configDir); err == nil {
+			err = utils.CopyDir(configDir, configBackupDir)
+			if err != nil {
+				progressMsg.Error = fmt.Errorf("failed to backup .config directory: %w", err)
+				return progressMsg
+			}
+		}
+
+		// Backup .local directory
+		localDir := filepath.Join(homeDir, ".local")
+		localBackupDir := filepath.Join(backupDir, ".local.bak")
+		if _, err := os.Stat(localDir); err == nil {
+			err = utils.CopyDir(localDir, localBackupDir)
+			if err != nil {
+				progressMsg.Error = fmt.Errorf("failed to backup .local directory: %w", err)
+				return progressMsg
+			}
+		}
+
+		// Proceed with dotfiles installation
+		return m.installDotfiles()()
+	}
+}
+
+// installDotfiles installs the dotfiles
+func (m *Model) installDotfiles() tea.Cmd {
+	return func() tea.Msg {
 		return m.handlePostInstallation()()
 	}
 }
@@ -269,6 +383,16 @@ func (m *Model) handleInstallProgress(msg InstallProgressMsg) (tea.Model, tea.Cm
 	if msg.HasConflict {
 		m.hasConflict = true
 		m.conflictMessage = msg.Conflict
+		return m, nil
+	}
+
+	if msg.IsDotfilesConfirmation {
+		m.installPhase = "dotfiles_confirmation"
+		return m, nil
+	}
+
+	if msg.IsBackupConfirmation {
+		m.installPhase = "backup_confirmation"
 		return m, nil
 	}
 

@@ -260,6 +260,16 @@ func (m Model) renderPackageCategoriesPage() string {
 func (m Model) renderInstallationPage() string {
 	title := TitleStyle.Render("Installing Hyprland")
 
+	// If we're in the dotfiles confirmation phase
+	if m.installPhase == "dotfiles_confirmation" {
+		return m.renderDotfilesConfirmation()
+	}
+
+	// If we're in the backup confirmation phase
+	if m.installPhase == "backup_confirmation" {
+		return m.renderBackupConfirmation()
+	}
+
 	// Render progress
 	progressPercentage := 0
 	if m.totalSteps > 0 {
@@ -290,6 +300,62 @@ func (m Model) renderInstallationPage() string {
 		progressText,
 		"",
 		currentStep,
+	)
+}
+
+// renderDotfilesConfirmation renders the dotfiles confirmation prompt
+func (m Model) renderDotfilesConfirmation() string {
+	title := TitleStyle.Render("Dotfiles Installation")
+	message := BoxStyle.Render("Do you want to install the dotfiles?")
+
+	// Render options
+	options := []string{
+		m.renderOption("Yes", m.dotfilesConfirmation),
+		m.renderOption("No", !m.dotfilesConfirmation),
+	}
+
+	optionsStr := lipgloss.JoinVertical(lipgloss.Left, options...)
+
+	// Render instructions
+	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm")
+
+	return lipgloss.JoinVertical(
+		lipgloss.Center,
+		title,
+		"",
+		message,
+		"",
+		optionsStr,
+		"",
+		instructions,
+	)
+}
+
+// renderBackupConfirmation renders the backup confirmation prompt
+func (m Model) renderBackupConfirmation() string {
+	title := TitleStyle.Render("Backup Configuration")
+	message := BoxStyle.Render("Do you want to backup your existing .config and .local directories before installing dotfiles?")
+
+	// Render options
+	options := []string{
+		m.renderOption("Yes", m.backupConfirmation),
+		m.renderOption("No", !m.backupConfirmation),
+	}
+
+	optionsStr := lipgloss.JoinVertical(lipgloss.Left, options...)
+
+	// Render instructions
+	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm")
+
+	return lipgloss.JoinVertical(
+		lipgloss.Center,
+		title,
+		"",
+		message,
+		"",
+		optionsStr,
+		"",
+		instructions,
 	)
 }
 

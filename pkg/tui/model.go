@@ -92,39 +92,42 @@ func DefaultKeyMap() KeyMap {
 
 // Model represents the state of the application
 type Model struct {
-	keyMap            KeyMap
-	help              help.Model
-	spinner           spinner.Model
-	width             int
-	height            int
-	page              Page
-	aurHelperOptions  []string
-	aurHelperIndex    int
-	aurHelper         *aur.Helper
-	categories        []config.PackageCategory
-	categoryIndex     int
-	optionIndex       int
-	selectedOptions   map[string][]string
-	selectedCategory  int
-	installProgress   int
-	installTotal      int
-	installCurrent    string
-	installError      string
-	installComplete   bool
-	showHelp          bool
-	passwordInput     string
-	awaitingPassword  bool
-	passwordVisible   bool
-	hasConflict       bool
-	conflictMessage   string
-	conflictChoice    bool
-	conflictOption    int // 0=Yes, 1=No, 2=Remove
-	conflictPackage   string
-	skippedPackages   map[string]bool // Track packages to skip
-	installationPhase string          // Current installation phase: "packages" or "post-installation"
-	phaseMessageShown bool            // Track if we've shown the phase transition message
-	repoCloned        bool            // Track if we've cloned the repository
-	configDirIndex    int             // Track which config directory we're currently processing
+	keyMap               KeyMap
+	help                 help.Model
+	spinner              spinner.Model
+	width                int
+	height               int
+	page                 Page
+	aurHelperOptions     []string
+	aurHelperIndex       int
+	aurHelper            *aur.Helper
+	aurHelperInstalled   bool // Track if the AUR helper is installed
+	categories           []config.PackageCategory
+	categoryIndex        int
+	optionIndex          int
+	selectedOptions      map[string][]string
+	selectedCategory     int
+	installProgress      int
+	installTotal         int
+	installCurrent       string
+	installError         string
+	installComplete      bool
+	showHelp             bool
+	passwordInput        string
+	awaitingPassword     bool
+	passwordVisible      bool
+	hasConflict          bool
+	conflictMessage      string
+	conflictChoice       bool
+	conflictOption       int // 0=Yes, 1=No, 2=Remove
+	conflictPackage      string
+	skippedPackages      map[string]bool // Track packages to skip
+	installationPhase    string          // Current installation phase: "packages" or "post-installation"
+	phaseMessageShown    bool            // Track if we've shown the phase transition message
+	repoCloned           bool            // Track if we've cloned the repository
+	configDirIndex       int             // Track which config directory we're currently processing
+	dotfilesConfirmation bool            // Track if the user wants to install dotfiles
+	backupConfirmation   bool            // Track if the user wants to backup existing config
 
 	// Installation state
 	packagesToInstall []string
@@ -141,36 +144,39 @@ func NewModel() Model {
 	s.Style = lipgloss.NewStyle().Foreground(primaryColor)
 
 	return Model{
-		keyMap:            DefaultKeyMap(),
-		help:              help.New(),
-		spinner:           s,
-		page:              WelcomePage,
-		aurHelperOptions:  config.AURHelpers,
-		aurHelperIndex:    0,
-		categories:        config.PackageCategories,
-		categoryIndex:     0,
-		optionIndex:       -1,
-		selectedOptions:   make(map[string][]string),
-		selectedCategory:  0,
-		installProgress:   0,
-		installTotal:      0,
-		installCurrent:    "",
-		installError:      "",
-		installComplete:   false,
-		showHelp:          false,
-		passwordInput:     "",
-		awaitingPassword:  false,
-		passwordVisible:   true,
-		hasConflict:       false,
-		conflictMessage:   "",
-		conflictChoice:    true,
-		conflictOption:    0,
-		conflictPackage:   "",
-		skippedPackages:   make(map[string]bool),
-		installationPhase: "",
-		phaseMessageShown: false,
-		repoCloned:        false,
-		configDirIndex:    0,
+		keyMap:               DefaultKeyMap(),
+		help:                 help.New(),
+		spinner:              s,
+		page:                 WelcomePage,
+		aurHelperOptions:     config.AURHelpers,
+		aurHelperIndex:       0,
+		aurHelperInstalled:   false,
+		categories:           config.PackageCategories,
+		categoryIndex:        0,
+		optionIndex:          -1,
+		selectedOptions:      make(map[string][]string),
+		selectedCategory:     0,
+		installProgress:      0,
+		installTotal:         0,
+		installCurrent:       "",
+		installError:         "",
+		installComplete:      false,
+		showHelp:             false,
+		passwordInput:        "",
+		awaitingPassword:     false,
+		passwordVisible:      true,
+		hasConflict:          false,
+		conflictMessage:      "",
+		conflictChoice:       true,
+		conflictOption:       0,
+		conflictPackage:      "",
+		skippedPackages:      make(map[string]bool),
+		installationPhase:    "",
+		phaseMessageShown:    false,
+		repoCloned:           false,
+		configDirIndex:       0,
+		dotfilesConfirmation: false,
+		backupConfirmation:   false,
 	}
 }
 
