@@ -1,43 +1,37 @@
 # Hyprland Installer
 
-A TUI (Terminal User Interface) installer for Hyprland with the Lunaris configuration.
+A TUI (Text User Interface) application for installing Hyprland on Arch Linux.
 
 ## Features
 
-- Install an AUR helper of your choice (yay or paru)
-- Install required packages for Hyprland
-- Select optional packages by category
-- Copy configuration files to your home directory
+- Select an AUR helper (yay or paru)
+- Choose packages to install from various categories
+- Install Hyprland and selected packages
+- Copy configuration files
+- Clone the Lunaric repository for Hyprland configuration
 
 ## Requirements
 
-- Arch Linux or Arch-based distribution
-- Go 1.18 or later
-- Base development tools (git, base-devel)
+- Arch Linux
+- Go 1.21 or later
+- Git
 
 ## Installation
 
-1. Clone the repository:
-
-```bash
-git clone https://github.com/Lunaris-Project/Lunaric.git
-cd Lunaric
-```
-
-2. Clone the installer repository:
+Clone the repository:
 
 ```bash
 git clone https://github.com/nixev/hyprland-installer.git
 cd hyprland-installer
 ```
 
-3. Build the installer:
+Build the installer:
 
 ```bash
-go build -o hyprland-installer cmd/installer/main.go
+go build -o hyprland-installer cmd/main.go
 ```
 
-4. Run the installer:
+Run the installer:
 
 ```bash
 ./hyprland-installer
@@ -45,45 +39,33 @@ go build -o hyprland-installer cmd/installer/main.go
 
 ## Usage
 
-The installer provides a simple TUI interface that guides you through the installation process:
+1. Select an AUR helper (yay or paru)
+2. Choose packages to install from various categories
+3. Start the installation
+4. Enter your sudo password when prompted
+5. Wait for the installation to complete
+6. Log out and select Hyprland from your display manager
 
-1. **Welcome Screen**: Introduction to the installer
-2. **AUR Helper Selection**: Choose between yay and paru
-3. **Package Selection**: Select which packages to install by category
-4. **Installation**: Install the selected packages and copy configuration files
-5. **Completion**: Installation complete
+## Package Categories
 
-### Navigation
+The installer includes the following package categories:
 
-- Use the arrow keys or `h`, `j`, `k`, `l` to navigate
-- Use `Tab` to switch between categories and options
-- Use `Enter` or `Space` to select an option
-- Use `Esc` to go back
-- Use `Ctrl+C` or `q` to quit
-- Use `?` to show help
+- Terminals (Alacritty, Kitty, Foot)
+- Shells (Zsh, Fish, Bash)
+- Browsers (Firefox, Chromium, Brave)
+- File Managers (Thunar, Dolphin, Nautilus)
+- Text Editors (Neovim, Visual Studio Code, Gedit)
+- Media Players (VLC, MPV, Celluloid)
 
-## What Gets Installed
+## Configuration
 
-The installer will:
+The installer copies configuration files to the following directories:
 
-1. Install the selected AUR helper (yay or paru)
-2. Install required packages for Hyprland
-3. Install optional packages based on your selection
-4. Copy configuration files to your home directory
-
-## Configuration Files
-
-The following directories will be copied to your home directory:
-
-- `.config`: Configuration files for various applications
-- `.local`: Local files and scripts
-- `.fonts`: Custom fonts
+- `.config/hypr`
+- `.config/waybar`
+- `.config/rofi`
+- `.config/dunst`
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgements
-
-- [Lunaris Project](https://github.com/Lunaris-Project) for the Hyprland configuration
-- [Charm](https://charm.sh) for the Bubble Tea TUI framework 
+MIT 
