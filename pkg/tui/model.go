@@ -128,6 +128,7 @@ type Model struct {
 	configDirIndex       int             // Track which config directory we're currently processing
 	dotfilesConfirmation bool            // Track if the user wants to install dotfiles
 	backupConfirmation   bool            // Track if the user wants to backup existing config
+	systemMessages       []string        // Store system messages for display
 
 	// Installation state
 	packagesToInstall []string
@@ -177,6 +178,7 @@ func NewModel() Model {
 		configDirIndex:       0,
 		dotfilesConfirmation: false,
 		backupConfirmation:   false,
+		systemMessages:       make([]string, 0),
 	}
 }
 

@@ -108,8 +108,8 @@ func (m Model) renderConflictResolution() string {
 
 // renderWelcomePage renders the welcome page
 func (m Model) renderWelcomePage() string {
-	title := TitleStyle.Render("Welcome to Hyprland Installer")
-	subtitle := SubtitleStyle.Render("This installer will help you set up Hyprland on your system")
+	title := TitleStyle.Render("Welcome to Lunaris Installer")
+	subtitle := SubtitleStyle.Render("This installer will help you set up Lunaris on your system")
 
 	// Render instructions
 	instructions := []string{
@@ -258,7 +258,7 @@ func (m Model) renderPackageCategoriesPage() string {
 
 // renderInstallationPage renders the installation page
 func (m Model) renderInstallationPage() string {
-	title := TitleStyle.Render("Installing Hyprland")
+	title := TitleStyle.Render("Installing Lunaris")
 
 	// If we're in the dotfiles confirmation phase
 	if m.installPhase == "dotfiles_confirmation" {
@@ -322,6 +322,56 @@ func (m Model) renderInstallationPage() string {
 
 	phaseInfo := InfoStyle.Render(phaseDescription)
 
+	// Render system messages in a box
+	var systemMessagesBox string
+	if len(m.systemMessages) > 0 {
+		// Get the last few messages (up to 5)
+		startIdx := 0
+		if len(m.systemMessages) > 5 {
+			startIdx = len(m.systemMessages) - 5
+		}
+
+		recentMessages := m.systemMessages[startIdx:]
+
+		// Format messages with timestamps and colors
+		formattedMessages := []string{}
+		for _, msg := range recentMessages {
+			// Colorize based on message content
+			var formattedMsg string
+			switch {
+			case strings.Contains(msg, "error") || strings.Contains(msg, "failed") || strings.Contains(msg, "conflict"):
+				formattedMsg = ErrorStyle.Render(msg)
+			case strings.Contains(msg, "success") || strings.Contains(msg, "complete"):
+				formattedMsg = SuccessStyle.Render(msg)
+			case strings.Contains(msg, "installing") || strings.Contains(msg, "building"):
+				formattedMsg = InfoStyle.Render(msg)
+			default:
+				formattedMsg = BaseStyle.Render(msg)
+			}
+			formattedMessages = append(formattedMessages, formattedMsg)
+		}
+
+		messagesText := strings.Join(formattedMessages, "\n")
+
+		// Create a scrollable box with system messages
+		systemMessagesBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(dimmedColor).
+			Padding(1, 2).
+			Width(m.width - 20).
+			Height(6).
+			Render(messagesText)
+	} else {
+		// Empty box with placeholder text
+		systemMessagesBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(dimmedColor).
+			Padding(1, 2).
+			Width(m.width - 20).
+			Height(6).
+			Render(DimStyle.Render("System messages will appear here..."))
+	}
+
 	return lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
@@ -333,6 +383,8 @@ func (m Model) renderInstallationPage() string {
 		progressText,
 		"",
 		currentStep,
+		"",
+		systemMessagesBox,
 	)
 }
 
@@ -400,7 +452,7 @@ func (m Model) renderCompletePage() string {
 	// Render instructions
 	instructions := []string{
 		"• Log out of your current session",
-		"• Select Hyprland from your display manager",
+		"• Select Lunaris from your display manager",
 		"• Your configuration files have been installed",
 		"• If you chose to backup, your original files are in ~/Lunaric-User-Backup/",
 		"• Enjoy your new desktop environment!",

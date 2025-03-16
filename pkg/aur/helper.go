@@ -1,6 +1,7 @@
 package aur
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -42,56 +43,68 @@ func (h *Helper) IsInstalled() bool {
 }
 
 // Install installs the AUR helper
-func (h *Helper) Install() error {
+func (h *Helper) Install() ([]string, error) {
 	// If the helper is already installed, return nil
 	if h.IsInstalled() {
-		return nil
+		return []string{"AUR helper already installed"}, nil
 	}
 
 	// Create a temporary directory
 	tempDir, err := os.MkdirTemp("", "aur-helper")
 	if err != nil {
-		return fmt.Errorf("failed to create temporary directory: %w", err)
+		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
 	// Change to the temporary directory
 	originalDir, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("failed to get current directory: %w", err)
+		return nil, fmt.Errorf("failed to get current directory: %w", err)
 	}
 	if err := os.Chdir(tempDir); err != nil {
-		return fmt.Errorf("failed to change to temporary directory: %w", err)
+		return nil, fmt.Errorf("failed to change to temporary directory: %w", err)
 	}
 	defer os.Chdir(originalDir)
 
+	// Collect system messages
+	messages := []string{}
+	messages = append(messages, fmt.Sprintf("Cloning %s repository...", h.Name))
+
 	// Clone the AUR helper repository
-	fmt.Printf("Cloning %s repository...\n", h.Name)
 	cloneCmd := exec.Command("git", "clone", fmt.Sprintf("https://aur.archlinux.org/%s.git", h.Name))
-	
+
 	// Capture output instead of sending directly to stdout/stderr
 	var cloneOutput bytes.Buffer
 	cloneCmd.Stdout = &cloneOutput
 	cloneCmd.Stderr = &cloneOutput
-	
+
 	if err := cloneCmd.Run(); err != nil {
-		return fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, cloneOutput.String())
+		return messages, fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, cloneOutput.String())
 	}
+
+	// Add clone output to messages
+	cloneOutputStr := cloneOutput.String()
+	if cloneOutputStr != "" {
+		messages = append(messages, cloneOutputStr)
+	}
+	messages = append(messages, fmt.Sprintf("Repository cloned successfully"))
 
 	// Change to the AUR helper directory
 	if err := os.Chdir(h.Name); err != nil {
-		return fmt.Errorf("failed to change to AUR helper directory: %w", err)
+		return messages, fmt.Errorf("failed to change to AUR helper directory: %w", err)
 	}
 
 	// Build and install the AUR helper
-	fmt.Printf("Building and installing %s...\n", h.Name)
+	messages = append(messages, fmt.Sprintf("Building and installing %s...", h.Name))
+
+	// Use nice to reduce CPU priority
 	var cmd *exec.Cmd
 	if h.sudoPassword != "" {
-		cmd = exec.Command("sudo", "-S", "makepkg", "-si", "--noconfirm")
+		cmd = exec.Command("nice", "-n", "19", "sudo", "-S", "makepkg", "-si", "--noconfirm")
 	} else {
-		cmd = exec.Command("makepkg", "-si", "--noconfirm")
+		cmd = exec.Command("nice", "-n", "19", "makepkg", "-si", "--noconfirm")
 	}
-	
+
 	// Capture output instead of sending directly to stdout/stderr
 	var buildOutput bytes.Buffer
 	cmd.Stdout = &buildOutput
@@ -99,11 +112,11 @@ func (h *Helper) Install() error {
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("failed to create stdin pipe: %w", err)
+		return messages, fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start makepkg: %w", err)
+		return messages, fmt.Errorf("failed to start makepkg: %w", err)
 	}
 
 	// Send the password if we have one
@@ -114,19 +127,36 @@ func (h *Helper) Install() error {
 
 	// Wait for the command to complete
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("failed to build and install package: %w\nOutput: %s", err, buildOutput.String())
+		buildOutputStr := buildOutput.String()
+		messages = append(messages, buildOutputStr)
+		return messages, fmt.Errorf("failed to build and install package: %w\nOutput: %s", err, buildOutputStr)
 	}
 
-	return nil
+	// Add build output to messages
+	buildOutputStr := buildOutput.String()
+	if buildOutputStr != "" {
+		// Split by lines and add each line as a message
+		outputLines := strings.Split(buildOutputStr, "\n")
+		for _, line := range outputLines {
+			if line != "" {
+				messages = append(messages, line)
+			}
+		}
+	}
+
+	messages = append(messages, fmt.Sprintf("%s installed successfully", h.Name))
+	return messages, nil
 }
 
 // InstallPackages installs packages using the AUR helper
-func (h *Helper) InstallPackages(packages []string) error {
+func (h *Helper) InstallPackages(packages []string) ([]string, error) {
 	if len(packages) == 0 {
-		return nil
+		return []string{"No packages to install"}, nil
 	}
 
-	fmt.Printf("InstallPackages called with: %v\n", packages)
+	// Collect system messages
+	messages := []string{}
+	messages = append(messages, fmt.Sprintf("Installing packages: %v", packages))
 
 	// Make sure any previous package manager process is cleared
 	ClearPackageManager()
@@ -147,32 +177,33 @@ func (h *Helper) InstallPackages(packages []string) error {
 	// Create a command that uses sudo directly if needed
 	var cmd *exec.Cmd
 
-	// Use sudo with the AUR helper if we have a password
+	// Use nice to reduce CPU priority and use sudo with the AUR helper if we have a password
 	if h.sudoPassword != "" {
-		cmd = exec.Command("sudo", "-S", h.Command)
+		cmd = exec.Command("nice", "-n", "19", "sudo", "-S", h.Command)
 		cmd.Args = append(cmd.Args, args...)
-		fmt.Printf("Using sudo with password. Command: sudo -S %s %s\n", h.Command, strings.Join(args, " "))
+		messages = append(messages, fmt.Sprintf("Using sudo with password. Command: sudo -S %s %s", h.Command, strings.Join(args, " ")))
 	} else {
-		// No password provided, just use the AUR helper directly
-		cmd = exec.Command(h.Command, args...)
-		fmt.Printf("No password provided. Command: %s %s\n", h.Command, strings.Join(args, " "))
+		// No password provided, just use the AUR helper directly with nice
+		cmd = exec.Command("nice", "-n", "19", h.Command)
+		cmd.Args = append(cmd.Args, args...)
+		messages = append(messages, fmt.Sprintf("No password provided. Command: %s %s", h.Command, strings.Join(args, " ")))
 	}
 
 	// Set up pipes for stdin, stdout, and stderr
 	var err error
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("failed to create stdin pipe: %w", err)
+		return messages, fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
 	// Capture output
 	var stdoutBuf, stderrBuf bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+	cmd.Stdout = io.MultiWriter(&stdoutBuf)
+	cmd.Stderr = io.MultiWriter(&stderrBuf)
 
 	// Start the command
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start command: %w", err)
+		return messages, fmt.Errorf("failed to start command: %w", err)
 	}
 
 	// Set the global variables to track the current package manager process
@@ -183,36 +214,85 @@ func (h *Helper) InstallPackages(packages []string) error {
 	// If we have a sudo password and we're using sudo -S, send it
 	if h.sudoPassword != "" {
 		fmt.Fprintf(stdin, "%s\n", h.sudoPassword)
-		fmt.Println("Sent sudo password to command")
+		messages = append(messages, "Sent sudo password to command")
 	}
 
 	// Create a channel to receive the command result
 	resultCh := make(chan error, 1)
 
+	// Create a channel to receive output updates
+	outputCh := make(chan string, 100)
+
+	// Start a goroutine to read output and send updates
+	go func() {
+		scanner := bufio.NewScanner(&stdoutBuf)
+		for scanner.Scan() {
+			outputCh <- scanner.Text()
+		}
+	}()
+
+	// Start another goroutine to read stderr
+	go func() {
+		scanner := bufio.NewScanner(&stderrBuf)
+		for scanner.Scan() {
+			outputCh <- scanner.Text()
+		}
+	}()
+
 	// Wait for the command to complete in a goroutine
 	go func() {
 		resultCh <- cmd.Wait()
+		close(outputCh)
 	}()
 
+	// Collect output messages
+	outputMessages := []string{}
+
 	// Wait for the command to complete or timeout
-	select {
-	case err := <-resultCh:
-		// Command completed
-		if err != nil {
-			// Check if the error is a conflict
-			if strings.Contains(stdoutBuf.String(), "conflict") || strings.Contains(stderrBuf.String(), "conflict") {
-				conflictMsg := extractConflictMessage(stdoutBuf.String(), stderrBuf.String())
-				return fmt.Errorf("package conflict detected: %s", conflictMsg)
+	for {
+		select {
+		case err := <-resultCh:
+			// Command completed
+			if err != nil {
+				// Check if the error is a conflict
+				stdoutStr := stdoutBuf.String()
+				stderrStr := stderrBuf.String()
+
+				if strings.Contains(stdoutStr, "conflict") || strings.Contains(stderrStr, "conflict") {
+					conflictMsg := extractConflictMessage(stdoutStr, stderrStr)
+					messages = append(messages, outputMessages...)
+					messages = append(messages, fmt.Sprintf("Conflict detected: %s", conflictMsg))
+					return messages, fmt.Errorf("package conflict detected: %s", conflictMsg)
+				}
+
+				messages = append(messages, outputMessages...)
+				messages = append(messages, fmt.Sprintf("Command failed: %v", err))
+				return messages, fmt.Errorf("command failed: %w", err)
 			}
-			return fmt.Errorf("command failed: %w", err)
+
+			messages = append(messages, outputMessages...)
+			messages = append(messages, "Packages installed successfully")
+			return messages, nil
+
+		case output, ok := <-outputCh:
+			// Got output from the command
+			if ok && output != "" {
+				outputMessages = append(outputMessages, output)
+				// Keep only the last 50 messages to avoid memory issues
+				if len(outputMessages) > 50 {
+					outputMessages = outputMessages[len(outputMessages)-50:]
+				}
+			}
+
+		case <-time.After(30 * time.Minute): // Timeout after 30 minutes
+			// Command timed out, kill it
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+			messages = append(messages, outputMessages...)
+			messages = append(messages, "Command timed out after 30 minutes")
+			return messages, fmt.Errorf("command timed out after 30 minutes")
 		}
-		return nil
-	case <-time.After(30 * time.Minute): // Timeout after 30 minutes
-		// Command timed out, kill it
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-		}
-		return fmt.Errorf("command timed out after 30 minutes")
 	}
 }
 

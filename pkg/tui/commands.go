@@ -117,16 +117,23 @@ func (m *Model) installAURHelper() tea.Cmd {
 
 		// Create a channel to send progress updates
 		errorCh := make(chan error, 1)
+		messagesCh := make(chan []string, 1)
 		doneCh := make(chan bool, 1)
 
 		// Run the installation in a goroutine
 		go func() {
 			// Install the AUR helper
-			err := m.aurHelper.Install()
+			messages, err := m.aurHelper.Install()
 			if err != nil {
+				// Add messages to system messages
+				m.systemMessages = append(m.systemMessages, messages...)
 				errorCh <- err
 				return
 			}
+
+			// Add messages to system messages
+			m.systemMessages = append(m.systemMessages, messages...)
+			messagesCh <- messages
 
 			// Signal completion
 			doneCh <- true
@@ -146,6 +153,12 @@ func (m *Model) installAURHelper() tea.Cmd {
 			case err := <-errorCh:
 				progressMsg.Error = err
 				return progressMsg
+
+			case messages := <-messagesCh:
+				// Update the current step with the last message
+				if len(messages) > 0 {
+					m.currentStep = messages[len(messages)-1]
+				}
 
 			case <-doneCh:
 				// Mark AUR helper as installed
@@ -204,7 +217,18 @@ func (m *Model) installNextPackage() tea.Cmd {
 		)
 
 		// Install the package
-		err := m.aurHelper.InstallPackages([]string{pkg})
+		messages, err := m.aurHelper.InstallPackages([]string{pkg})
+
+		// Add messages to system messages
+		if messages != nil && len(messages) > 0 {
+			m.systemMessages = append(m.systemMessages, messages...)
+
+			// Update the current step with the last message
+			if len(messages) > 0 {
+				m.currentStep = messages[len(messages)-1]
+			}
+		}
+
 		if err != nil {
 			// Check if it's a conflict error
 			if strings.Contains(err.Error(), "conflict") {
@@ -250,6 +274,8 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 
 		// Create the backup directory
 		backupDir := filepath.Join(homeDir, "Lunaric-User-Backup")
+		m.systemMessages = append(m.systemMessages, fmt.Sprintf("Creating backup directory: %s", backupDir))
+
 		err = os.MkdirAll(backupDir, 0755)
 		if err != nil {
 			progressMsg.Error = fmt.Errorf("failed to create backup directory: %w", err)
@@ -275,6 +301,8 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 
 			// Check if the source directory exists
 			if _, err := os.Stat(sourceDir); err == nil {
+				m.systemMessages = append(m.systemMessages, fmt.Sprintf("Backing up %s to %s", dir.source, dir.destination))
+
 				// Create parent directories if needed
 				err = os.MkdirAll(filepath.Dir(destDir), 0755)
 				if err != nil {
@@ -289,11 +317,13 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 					return progressMsg
 				}
 
-				fmt.Printf("Backed up %s to %s\n", dir.source, dir.destination)
+				m.systemMessages = append(m.systemMessages, fmt.Sprintf("Successfully backed up %s to %s", dir.source, dir.destination))
 			} else {
-				fmt.Printf("Skipping backup of %s: directory does not exist\n", dir.source)
+				m.systemMessages = append(m.systemMessages, fmt.Sprintf("Skipping backup of %s: directory does not exist", dir.source))
 			}
 		}
+
+		m.systemMessages = append(m.systemMessages, "Backup completed successfully")
 
 		// Proceed with dotfiles installation
 		return m.installDotfiles()()
@@ -331,11 +361,15 @@ func (m *Model) handlePostInstallation() tea.Cmd {
 			nil,
 		)
 
+		// Add system message
+		m.systemMessages = append(m.systemMessages, fmt.Sprintf("Cloning configuration repository from %s", config.ConfigRepo))
+
 		// Create the Lunaric directory in the user's home directory
 		lunaricDir := filepath.Join(homeDir, "Lunaric")
 
 		// Remove the directory if it already exists
 		if _, err := os.Stat(lunaricDir); err == nil {
+			m.systemMessages = append(m.systemMessages, fmt.Sprintf("Removing existing directory: %s", lunaricDir))
 			err = os.RemoveAll(lunaricDir)
 			if err != nil {
 				progressMsg.Error = fmt.Errorf("failed to remove existing Lunaric directory: %w", err)
@@ -349,6 +383,14 @@ func (m *Model) handlePostInstallation() tea.Cmd {
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
 		err = cmd.Run()
+
+		// Add output to system messages
+		if stdout.Len() > 0 {
+			m.systemMessages = append(m.systemMessages, stdout.String())
+		}
+		if stderr.Len() > 0 {
+			m.systemMessages = append(m.systemMessages, stderr.String())
+		}
 
 		if err != nil {
 			// Provide detailed error message
@@ -371,6 +413,8 @@ func (m *Model) handlePostInstallation() tea.Cmd {
 			return progressMsg
 		}
 
+		m.systemMessages = append(m.systemMessages, "Repository cloned successfully")
+
 		// Copy configuration files from the cloned repository to the user's home directory
 		for _, configDir := range config.ConfigDirs {
 			m.installProgress++
@@ -381,6 +425,9 @@ func (m *Model) handlePostInstallation() tea.Cmd {
 				"Post-Installation",
 				nil,
 			)
+
+			// Add system message
+			m.systemMessages = append(m.systemMessages, fmt.Sprintf("Copying %s to user home directory", configDir))
 
 			// Create the target directory
 			targetDir := filepath.Join(homeDir, configDir)
@@ -394,7 +441,7 @@ func (m *Model) handlePostInstallation() tea.Cmd {
 			sourceDir := filepath.Join(lunaricDir, configDir)
 			if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
 				// Log that we're skipping this directory
-				fmt.Printf("Skipping %s: directory does not exist in the repository\n", configDir)
+				m.systemMessages = append(m.systemMessages, fmt.Sprintf("Skipping %s: directory does not exist in the repository", configDir))
 				continue
 			}
 
@@ -403,7 +450,12 @@ func (m *Model) handlePostInstallation() tea.Cmd {
 				progressMsg.Error = fmt.Errorf("failed to copy files to %s: %w", targetDir, err)
 				return progressMsg
 			}
+
+			m.systemMessages = append(m.systemMessages, fmt.Sprintf("Successfully copied %s", configDir))
 		}
+
+		// Add final system message
+		m.systemMessages = append(m.systemMessages, "Installation complete!")
 
 		// Installation complete
 		return NewCompleteMsg()
