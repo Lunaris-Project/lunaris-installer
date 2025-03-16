@@ -24,7 +24,10 @@ go.work
 .cursor/
 *.swp
 *.swo
+./hyprland-installer
+./install
 
+.gitignore
 # OS specific files
 .DS_Store
 Thumbs.db 
