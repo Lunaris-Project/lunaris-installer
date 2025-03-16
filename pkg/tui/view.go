@@ -45,7 +45,18 @@ func (m Model) View() string {
 
 	// Add help hint at the bottom
 	helpHint := DimStyle.Render("Press ? for help")
-	return lipgloss.JoinVertical(lipgloss.Left, content, helpHint)
+
+	// Center the content vertically based on terminal height
+	if m.height > 0 {
+		contentLines := strings.Count(content, "\n") + 1
+		paddingTop := (m.height - contentLines - 1) / 2 // -1 for help hint
+		if paddingTop > 0 {
+			topPadding := strings.Repeat("\n", paddingTop)
+			content = topPadding + content
+		}
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Center, content, helpHint)
 }
 
 // renderPasswordPrompt renders the password prompt
@@ -61,11 +72,14 @@ func (m Model) renderPasswordPrompt() string {
 		passwordDisplay = strings.Repeat("*", len(m.passwordInput))
 	}
 
-	passwordField := BoxStyle.Render(passwordDisplay)
+	// Adjust box width based on terminal width
+	boxWidth := min(m.width-10, 60)
+	passwordField := BoxStyle.Copy().Width(boxWidth).Render(passwordDisplay)
 
 	// Render instructions
 	instructions := InfoStyle.Render("Press Enter to submit, Esc to cancel, Tab to toggle visibility")
 
+	// Center everything horizontally
 	return lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
@@ -80,7 +94,10 @@ func (m Model) renderPasswordPrompt() string {
 // renderConflictResolution renders the conflict resolution dialog
 func (m Model) renderConflictResolution() string {
 	title := TitleStyle.Render("Package Conflict")
-	message := BoxStyle.Render(m.conflictMessage)
+
+	// Adjust box width based on terminal width
+	boxWidth := min(m.width-10, 70)
+	message := BoxStyle.Copy().Width(boxWidth).Render(m.conflictMessage)
 
 	// Render options
 	options := []string{
@@ -94,6 +111,7 @@ func (m Model) renderConflictResolution() string {
 	// Render instructions
 	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm")
 
+	// Center everything horizontally
 	return lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
@@ -108,14 +126,18 @@ func (m Model) renderConflictResolution() string {
 
 // renderSystemMessages renders the system messages box efficiently
 func (m Model) renderSystemMessages() string {
+	// Calculate dynamic width based on terminal size
+	boxWidth := max(min(m.width-10, 100), 40) // Min 40, max 100, or terminal width - 10
+
 	if len(m.systemMessages) == 0 {
 		// Empty box with placeholder text
 		return lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(dimmedColor).
 			Padding(1, 2).
-			Width(m.width - 20).
+			Width(boxWidth).
 			Height(6).
+			Align(lipgloss.Center).
 			Render(DimStyle.Render("System messages will appear here..."))
 	}
 
@@ -152,15 +174,23 @@ func (m Model) renderSystemMessages() string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(dimmedColor).
 		Padding(1, 2).
-		Width(m.width - 20).
+		Width(boxWidth).
 		Height(6).
 		Render(messagesText)
 }
 
 // renderWelcomePage renders the welcome page
 func (m Model) renderWelcomePage() string {
-	title := TitleStyle.Render("Welcome to Lunaris Installer")
-	subtitle := SubtitleStyle.Render("This installer will help you set up Lunaris on your system")
+	// Create a dynamic title with background that adapts to terminal width
+	titleStyle := TitleStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	title := titleStyle.Render("Welcome to Lunaris Installer")
+	subtitle := SubtitleStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center).
+		Render("This installer will help you set up Lunaris on your system")
 
 	// Render instructions
 	instructions := []string{
@@ -169,20 +199,27 @@ func (m Model) renderWelcomePage() string {
 		"• The installer will handle the rest",
 	}
 
+	// Calculate box width based on terminal width
+	boxWidth := min(m.width-20, 70)
+
 	instructionsStr := lipgloss.JoinVertical(
 		lipgloss.Left,
 		instructions...,
 	)
 
+	boxStyle := BoxStyle.Copy().Width(boxWidth).Align(lipgloss.Center)
+	instructionsBox := boxStyle.Render(instructionsStr)
+
 	// Render button
 	button := m.renderButton("Continue", true)
 
+	// Center everything horizontally
 	return lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
 		subtitle,
 		"",
-		BoxStyle.Render(instructionsStr),
+		instructionsBox,
 		"",
 		button,
 	)
@@ -190,8 +227,16 @@ func (m Model) renderWelcomePage() string {
 
 // renderAURHelperPage renders the AUR helper selection page
 func (m Model) renderAURHelperPage() string {
-	title := TitleStyle.Render("Select AUR Helper")
-	subtitle := SubtitleStyle.Render("Choose which AUR helper to use for installation")
+	// Create a dynamic title with background that adapts to terminal width
+	titleStyle := TitleStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	title := titleStyle.Render("Select AUR Helper")
+	subtitle := SubtitleStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center).
+		Render("Choose which AUR helper to use for installation")
 
 	// Render options
 	options := []string{}
@@ -201,15 +246,21 @@ func (m Model) renderAURHelperPage() string {
 
 	optionsStr := lipgloss.JoinVertical(lipgloss.Left, options...)
 
+	// Calculate box width based on terminal width
+	boxWidth := min(m.width-20, 60)
+	boxStyle := BoxStyle.Copy().Width(boxWidth).Align(lipgloss.Center)
+	optionsBox := boxStyle.Render(optionsStr)
+
 	// Render instructions
 	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm, Esc to go back")
 
+	// Center everything horizontally
 	return lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
 		subtitle,
 		"",
-		BoxStyle.Render(optionsStr),
+		optionsBox,
 		"",
 		instructions,
 	)
@@ -217,8 +268,16 @@ func (m Model) renderAURHelperPage() string {
 
 // renderPackageCategoriesPage renders the package categories page
 func (m Model) renderPackageCategoriesPage() string {
-	title := TitleStyle.Render("Select Packages")
-	subtitle := SubtitleStyle.Render("Choose which packages to install")
+	// Create a dynamic title with background that adapts to terminal width
+	titleStyle := TitleStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	title := titleStyle.Render("Select Packages")
+	subtitle := SubtitleStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center).
+		Render("Choose which packages to install")
 
 	// Render categories and options
 	var content string
@@ -288,6 +347,11 @@ func (m Model) renderPackageCategoriesPage() string {
 		content = InfoStyle.Render("No package categories available")
 	}
 
+	// Calculate box width based on terminal width
+	boxWidth := min(m.width-10, 80)
+	boxStyle := BoxStyle.Copy().Width(boxWidth)
+	contentBox := boxStyle.Render(content)
+
 	// Render instructions
 	var instructions string
 	if m.optionIndex == -1 {
@@ -296,12 +360,13 @@ func (m Model) renderPackageCategoriesPage() string {
 		instructions = InfoStyle.Render("Use Up/Down to navigate, Enter to toggle, Tab to switch to categories, Esc to go back")
 	}
 
+	// Center everything horizontally
 	return lipgloss.JoinVertical(
-		lipgloss.Left,
+		lipgloss.Center,
 		title,
 		subtitle,
 		"",
-		BoxStyle.Render(content),
+		contentBox,
 		"",
 		instructions,
 	)
@@ -309,7 +374,12 @@ func (m Model) renderPackageCategoriesPage() string {
 
 // renderInstallationPage renders the installation page
 func (m Model) renderInstallationPage() string {
-	title := TitleStyle.Render("Installing Lunaris")
+	// Create a dynamic title with background that adapts to terminal width
+	titleStyle := TitleStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	title := titleStyle.Render("Installing Lunaris")
 
 	// If we're in the dotfiles confirmation phase
 	if m.installPhase == "dotfiles_confirmation" {
@@ -327,8 +397,11 @@ func (m Model) renderInstallationPage() string {
 		progressPercentage = (m.installProgress * 100) / m.totalSteps
 	}
 
+	// Calculate progress bar width based on terminal width
+	progressBarWidth := min(m.width-10, 80)
+
 	// Create a more visually appealing progress bar
-	progressBar := RenderProgressBar(m.width-20, progressPercentage)
+	progressBar := RenderProgressBar(progressBarWidth, progressPercentage)
 	progressText := fmt.Sprintf("%d/%d (%d%%)", m.installProgress, m.totalSteps, progressPercentage)
 
 	// Render current step with animated spinner
@@ -351,10 +424,13 @@ func (m Model) renderInstallationPage() string {
 	}
 
 	// Render phase with better styling
-	phase := SubtitleStyle.Copy().
+	phaseStyle := SubtitleStyle.Copy().
 		Foreground(primaryColor).
 		Bold(true).
-		Render(m.installPhase)
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	phase := phaseStyle.Render(m.installPhase)
 
 	// Add a more descriptive message based on the current phase
 	var phaseDescription string
@@ -371,11 +447,16 @@ func (m Model) renderInstallationPage() string {
 		phaseDescription = "Preparing your system"
 	}
 
-	phaseInfo := InfoStyle.Render(phaseDescription)
+	phaseInfoStyle := InfoStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	phaseInfo := phaseInfoStyle.Render(phaseDescription)
 
 	// Render system messages box
 	systemMessagesBox := m.renderSystemMessages()
 
+	// Center everything horizontally
 	return lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
@@ -394,8 +475,17 @@ func (m Model) renderInstallationPage() string {
 
 // renderDotfilesConfirmation renders the dotfiles confirmation prompt
 func (m Model) renderDotfilesConfirmation() string {
-	title := TitleStyle.Render("Dotfiles Installation")
-	message := BoxStyle.Render("Do you want to install the dotfiles?")
+	// Create a dynamic title with background that adapts to terminal width
+	titleStyle := TitleStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	title := titleStyle.Render("Dotfiles Installation")
+
+	// Calculate box width based on terminal width
+	boxWidth := min(m.width-20, 60)
+	boxStyle := BoxStyle.Copy().Width(boxWidth).Align(lipgloss.Center)
+	message := boxStyle.Render("Do you want to install the dotfiles?")
 
 	// Render options
 	options := []string{
@@ -408,6 +498,7 @@ func (m Model) renderDotfilesConfirmation() string {
 	// Render instructions
 	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm")
 
+	// Center everything horizontally
 	return lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
@@ -422,8 +513,17 @@ func (m Model) renderDotfilesConfirmation() string {
 
 // renderBackupConfirmation renders the backup confirmation prompt
 func (m Model) renderBackupConfirmation() string {
-	title := TitleStyle.Render("Backup Configuration")
-	message := BoxStyle.Render("Do you want to backup your existing configuration directories before installing dotfiles?\n\nThe following directories will be backed up if they exist:\n• .config\n• .local\n• .ags\n• .fonts\n• Pictures\n\nBackups will be stored in ~/Lunaric-User-Backup/")
+	// Create a dynamic title with background that adapts to terminal width
+	titleStyle := TitleStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	title := titleStyle.Render("Backup Configuration")
+
+	// Calculate box width based on terminal width
+	boxWidth := min(m.width-20, 70)
+	boxStyle := BoxStyle.Copy().Width(boxWidth).Align(lipgloss.Center)
+	message := boxStyle.Render("Do you want to backup your existing configuration directories before installing dotfiles?\n\nThe following directories will be backed up if they exist:\n• .config\n• .local\n• .ags\n• .fonts\n• Pictures\n\nBackups will be stored in ~/Lunaric-User-Backup/")
 
 	// Render options
 	options := []string{
@@ -436,6 +536,7 @@ func (m Model) renderBackupConfirmation() string {
 	// Render instructions
 	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm")
 
+	// Center everything horizontally
 	return lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
@@ -450,8 +551,18 @@ func (m Model) renderBackupConfirmation() string {
 
 // renderCompletePage renders the complete page
 func (m Model) renderCompletePage() string {
-	title := TitleStyle.Render("Installation Complete")
-	message := SuccessStyle.Render("Lunaris has been successfully installed on your system!")
+	// Create a dynamic title with background that adapts to terminal width
+	titleStyle := TitleStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	title := titleStyle.Render("Installation Complete")
+
+	messageStyle := SuccessStyle.Copy().
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	message := messageStyle.Render("Lunaris has been successfully installed on your system!")
 
 	// Render instructions
 	instructions := []string{
@@ -467,16 +578,22 @@ func (m Model) renderCompletePage() string {
 		instructions...,
 	)
 
+	// Calculate box width based on terminal width
+	boxWidth := min(m.width-20, 70)
+	boxStyle := BoxStyle.Copy().Width(boxWidth).Align(lipgloss.Center)
+	instructionsBox := boxStyle.Render(instructionsStr)
+
 	// Render button
 	button := m.renderButton("Exit", true)
 
+	// Center everything horizontally
 	return lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
 		"",
 		message,
 		"",
-		BoxStyle.Render(instructionsStr),
+		instructionsBox,
 		"",
 		button,
 	)
@@ -497,3 +614,6 @@ func (m Model) renderButton(text string, selected bool) string {
 	}
 	return ButtonStyle.Render(text)
 }
+
+// Helper functions for min and max are already defined elsewhere in the codebase
+// So we don't need to redefine them here
