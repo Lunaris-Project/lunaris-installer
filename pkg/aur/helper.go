@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -288,7 +289,7 @@ func (h *Helper) InstallPackages(packages []string) ([]string, error) {
 	}
 
 	// Collect system messages - use a fixed size buffer to limit memory usage
-	messages := make([]string, 0, 50) // Pre-allocate with capacity of 50
+	messages := make([]string, 0, 20) // Reduce capacity from 50 to 20
 	messages = append(messages, fmt.Sprintf("Installing packages: %v", packages))
 
 	// Make sure any previous package manager process is cleared
@@ -314,18 +315,18 @@ func (h *Helper) InstallPackages(packages []string) ([]string, error) {
 	if h.sudoPassword != "" {
 		cmd = exec.Command("ionice", "-c", "3", "nice", "-n", "19", "sudo", "-S", h.Command)
 		cmd.Args = append(cmd.Args, args...)
-		messages = append(messages, fmt.Sprintf("Using sudo with password. Command: sudo -S %s %s", h.Command, strings.Join(args, " ")))
+		messages = append(messages, "Using sudo with password")
 	} else {
 		// No password provided, just use the AUR helper directly with nice
 		cmd = exec.Command("ionice", "-c", "3", "nice", "-n", "19", h.Command)
 		cmd.Args = append(cmd.Args, args...)
-		messages = append(messages, fmt.Sprintf("No password provided. Command: %s %s", h.Command, strings.Join(args, " ")))
+		messages = append(messages, "No password provided")
 	}
 
 	// Set resource limits using environment variables
 	cmd.Env = append(os.Environ(),
-		"MAKEFLAGS=-j2",               // Limit make to 2 jobs
-		"CARGO_BUILD_JOBS=2",          // Limit Rust builds to 2 jobs
+		"MAKEFLAGS=-j1",               // Limit make to 1 job to reduce memory usage
+		"CARGO_BUILD_JOBS=1",          // Limit Rust builds to 1 job
 		"RUSTFLAGS=-Ccodegen-units=1", // Reduce Rust memory usage
 	)
 
@@ -379,66 +380,29 @@ func (h *Helper) InstallPackages(packages []string) ([]string, error) {
 	go func() {
 		defer close(outputDone)
 
-		// Use buffered readers with small buffers to reduce memory usage
-		stdoutReader := bufio.NewReaderSize(stdout, 4096)
-		stderrReader := bufio.NewReaderSize(stderr, 4096)
+		// Use a mutex to protect access to the messages slice
+		var messagesMutex sync.Mutex
+
+		// Use a counter to track how many messages we've processed
+		// This helps us avoid checking the length of the messages slice too often
+		messageCount := 2 // Start at 2 because we've already added 2 messages
+
+		// Process stdout and stderr concurrently
+		stdoutDone := make(chan struct{})
+		stderrDone := make(chan struct{})
 
 		// Process stdout
 		go func() {
-			for {
-				line, err := stdoutReader.ReadString('\n')
-				if err != nil {
-					if err != io.EOF {
-						messages = append(messages, fmt.Sprintf("Error reading stdout: %v", err))
-					}
-					break
+			defer close(stdoutDone)
+			scanner := bufio.NewScanner(stdout)
+			scanner.Buffer(make([]byte, 4096), 4096) // Use a small buffer
+
+			for scanner.Scan() {
+				line := scanner.Text()
+				if line == "" {
+					continue
 				}
 
-				line = strings.TrimSpace(line)
-				if line != "" {
-					// Check for conflicts
-					if strings.Contains(line, "conflict") {
-						select {
-						case conflictCh <- line:
-							// Sent conflict message
-						default:
-							// Channel full, just continue
-						}
-					}
-
-					// Only keep important messages to reduce memory usage
-					if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
-						strings.Contains(line, "installing") || strings.Contains(line, "conflict") {
-
-						// Add to messages with thread safety
-						messages = append(messages, line)
-
-						// Limit the number of messages to avoid memory issues
-						if len(messages) > 100 {
-							// Create a new slice with truncated messages
-							truncatedMessages := make([]string, 0, 100)
-							truncatedMessages = append(truncatedMessages, messages[:50]...)
-							truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
-							truncatedMessages = append(truncatedMessages, messages[len(messages)-49:]...)
-							messages = truncatedMessages
-						}
-					}
-				}
-			}
-		}()
-
-		// Process stderr
-		for {
-			line, err := stderrReader.ReadString('\n')
-			if err != nil {
-				if err != io.EOF {
-					messages = append(messages, fmt.Sprintf("Error reading stderr: %v", err))
-				}
-				break
-			}
-
-			line = strings.TrimSpace(line)
-			if line != "" {
 				// Check for conflicts
 				if strings.Contains(line, "conflict") {
 					select {
@@ -454,20 +418,86 @@ func (h *Helper) InstallPackages(packages []string) ([]string, error) {
 					strings.Contains(line, "installing") || strings.Contains(line, "conflict") {
 
 					// Add to messages with thread safety
+					messagesMutex.Lock()
 					messages = append(messages, line)
+					messageCount++
 
 					// Limit the number of messages to avoid memory issues
-					if len(messages) > 100 {
-						// Create a new slice with truncated messages
-						truncatedMessages := make([]string, 0, 100)
-						truncatedMessages = append(truncatedMessages, messages[:50]...)
-						truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
-						truncatedMessages = append(truncatedMessages, messages[len(messages)-49:]...)
-						messages = truncatedMessages
+					// Only check and truncate occasionally to reduce overhead
+					if messageCount > 50 && messageCount%10 == 0 && len(messages) > 40 {
+						// Keep only the first 20 and last 20 messages
+						newMessages := make([]string, 0, 41)
+						newMessages = append(newMessages, messages[:20]...)
+						newMessages = append(newMessages, "... (output truncated) ...")
+						newMessages = append(newMessages, messages[len(messages)-20:]...)
+						messages = newMessages
 					}
+					messagesMutex.Unlock()
 				}
 			}
-		}
+
+			if err := scanner.Err(); err != nil && err != io.EOF {
+				messagesMutex.Lock()
+				messages = append(messages, fmt.Sprintf("Error reading stdout: %v", err))
+				messagesMutex.Unlock()
+			}
+		}()
+
+		// Process stderr
+		go func() {
+			defer close(stderrDone)
+			scanner := bufio.NewScanner(stderr)
+			scanner.Buffer(make([]byte, 4096), 4096) // Use a small buffer
+
+			for scanner.Scan() {
+				line := scanner.Text()
+				if line == "" {
+					continue
+				}
+
+				// Check for conflicts
+				if strings.Contains(line, "conflict") {
+					select {
+					case conflictCh <- line:
+						// Sent conflict message
+					default:
+						// Channel full, just continue
+					}
+				}
+
+				// Only keep important messages to reduce memory usage
+				if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
+					strings.Contains(line, "installing") || strings.Contains(line, "conflict") {
+
+					// Add to messages with thread safety
+					messagesMutex.Lock()
+					messages = append(messages, line)
+					messageCount++
+
+					// Limit the number of messages to avoid memory issues
+					// Only check and truncate occasionally to reduce overhead
+					if messageCount > 50 && messageCount%10 == 0 && len(messages) > 40 {
+						// Keep only the first 20 and last 20 messages
+						newMessages := make([]string, 0, 41)
+						newMessages = append(newMessages, messages[:20]...)
+						newMessages = append(newMessages, "... (output truncated) ...")
+						newMessages = append(newMessages, messages[len(messages)-20:]...)
+						messages = newMessages
+					}
+					messagesMutex.Unlock()
+				}
+			}
+
+			if err := scanner.Err(); err != nil && err != io.EOF {
+				messagesMutex.Lock()
+				messages = append(messages, fmt.Sprintf("Error reading stderr: %v", err))
+				messagesMutex.Unlock()
+			}
+		}()
+
+		// Wait for both stdout and stderr processing to complete
+		<-stdoutDone
+		<-stderrDone
 	}()
 
 	// Wait for the command to complete or timeout

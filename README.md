@@ -1,14 +1,14 @@
-# Hyprland Installer
+# Lunaris Installer
 
-A TUI (Text User Interface) application for installing Hyprland on Arch Linux.
+A TUI (Text User Interface) application for installing Lunaris on Arch Linux.
 
 ## Features
 
 - Select an AUR helper (yay or paru)
 - Choose packages to install from various categories
-- Install Hyprland and selected packages
+- Install Lunaris and selected packages
 - Copy configuration files
-- Clone the Lunaric repository for Hyprland configuration
+- Clone the Lunaric repository for Lunaris configuration
 
 ## Requirements
 
@@ -21,20 +21,20 @@ A TUI (Text User Interface) application for installing Hyprland on Arch Linux.
 Clone the repository:
 
 ```bash
-git clone https://github.com/nixev/hyprland-installer.git
-cd hyprland-installer
+git clone https://github.com/Lunaris-Project/lunaris-installer.git
+cd lunaris-installer
 ```
 
 Build the installer:
 
 ```bash
-go build -o hyprland-installer cmd/main.go
+go build -o lunaris-installer cmd/main.go
 ```
 
 Run the installer:
 
 ```bash
-./hyprland-installer
+./lunaris-installer
 ```
 
 ## Usage
@@ -44,7 +44,7 @@ Run the installer:
 3. Start the installation
 4. Enter your sudo password when prompted
 5. Wait for the installation to complete
-6. Log out and select Hyprland from your display manager
+6. Log out and select Lunaris from your display manager
 
 ## Package Categories
 

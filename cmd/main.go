@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/Lunaris-Project/lunaris-installer/pkg/tui"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nixev/hyprland-installer/pkg/tui"
 )
 
 func main() {

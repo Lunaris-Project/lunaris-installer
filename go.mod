@@ -1,4 +1,4 @@
-module github.com/nixev/hyprland-installer
+module github.com/Lunaris-Project/lunaris-installer
 
 go 1.21
 

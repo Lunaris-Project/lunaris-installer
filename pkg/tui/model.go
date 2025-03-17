@@ -1,13 +1,13 @@
 package tui
 
 import (
+	"github.com/Lunaris-Project/lunaris-installer/pkg/aur"
+	"github.com/Lunaris-Project/lunaris-installer/pkg/config"
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nixev/hyprland-installer/pkg/aur"
-	"github.com/nixev/hyprland-installer/pkg/config"
 )
 
 // Page represents a page in the installer

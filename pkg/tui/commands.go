@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"bytes"
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Lunaris-Project/lunaris-installer/pkg/config"
+	"github.com/Lunaris-Project/lunaris-installer/pkg/utils"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nixev/hyprland-installer/pkg/config"
-	"github.com/nixev/hyprland-installer/pkg/utils"
 )
 
 // startInstallation starts the installation process
@@ -117,34 +117,39 @@ func (m *Model) installAURHelper() tea.Cmd {
 
 		// Create a channel to send progress updates
 		errorCh := make(chan error, 1)
-		messagesCh := make(chan []string, 1)
+		messagesCh := make(chan string, 10) // Buffer for messages
 		doneCh := make(chan bool, 1)
 
 		// Run the installation in a goroutine
 		go func() {
 			// Install the AUR helper
 			messages, err := m.aurHelper.Install()
+
+			// Send messages as they come in
+			for _, msg := range messages {
+				select {
+				case messagesCh <- msg:
+					// Message sent
+				default:
+					// Channel full, just continue
+				}
+			}
+
 			if err != nil {
-				// Add messages to system messages
-				m.systemMessages = append(m.systemMessages, messages...)
 				errorCh <- err
 				return
 			}
-
-			// Add messages to system messages
-			m.systemMessages = append(m.systemMessages, messages...)
-			messagesCh <- messages
 
 			// Signal completion
 			doneCh <- true
 		}()
 
-		// Set up a ticker to update the spinner
+		// Set up a ticker to update the UI frequently
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 
-		// Set up a timeout timer
-		timeout := time.NewTimer(30 * time.Second)
+		// Set up a timeout timer for long operations
+		timeout := time.NewTimer(30 * time.Minute)
 		defer timeout.Stop()
 
 		// Wait for installation to complete or for progress updates
@@ -154,15 +159,28 @@ func (m *Model) installAURHelper() tea.Cmd {
 				progressMsg.Error = err
 				return progressMsg
 
-			case messages := <-messagesCh:
-				// Update the current step with the last message
-				if len(messages) > 0 {
-					m.currentStep = messages[len(messages)-1]
-				}
+			case message := <-messagesCh:
+				// Add message to system messages
+				m.systemMessages = append(m.systemMessages, message)
+
+				// Update the current step with the message
+				m.currentStep = message
+
+				// Return a progress message to update the UI
+				return NewInstallProgressMsg(
+					m.installProgress,
+					m.totalSteps,
+					message,
+					"AUR Helper Installation",
+					nil,
+				)
 
 			case <-doneCh:
 				// Mark AUR helper as installed
 				m.aurHelperInstalled = true
+
+				// Add final success message
+				m.systemMessages = append(m.systemMessages, fmt.Sprintf("%s installed successfully", m.aurHelper.Name))
 
 				// Continue with package installation
 				return m.continueInstallation()()
@@ -173,20 +191,25 @@ func (m *Model) installAURHelper() tea.Cmd {
 					// Mark AUR helper as installed
 					m.aurHelperInstalled = true
 
+					// Add final success message
+					m.systemMessages = append(m.systemMessages, fmt.Sprintf("%s installed successfully", m.aurHelper.Name))
+
 					// Continue with package installation
 					return m.continueInstallation()()
 				}
 
-			case <-timeout.C:
-				// If no updates for 30 seconds, assume installation is still in progress
-				// but send an update to refresh the UI
-				progressMsg = NewInstallProgressMsg(
+				// Return a progress message to update the UI
+				return NewInstallProgressMsg(
 					m.installProgress,
 					m.totalSteps,
-					fmt.Sprintf("Still installing %s... (this may take a while)", m.aurHelper.Name),
+					m.currentStep,
 					"AUR Helper Installation",
 					nil,
 				)
+
+			case <-timeout.C:
+				// If no updates for 30 minutes, assume installation failed
+				progressMsg.Error = fmt.Errorf("installation timed out after 30 minutes")
 				return progressMsg
 			}
 		}
@@ -274,11 +297,47 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 
 		// Create the backup directory
 		backupDir := filepath.Join(homeDir, "Lunaric-User-Backup")
-		m.systemMessages = append(m.systemMessages, fmt.Sprintf("Creating backup directory: %s", backupDir))
+		backupMsg := fmt.Sprintf("Creating backup directory: %s", backupDir)
+		m.systemMessages = append(m.systemMessages, backupMsg)
+		m.currentStep = backupMsg
+
+		// Send an update to the UI
+		progressMsg = NewInstallProgressMsg(
+			m.installProgress,
+			m.totalSteps,
+			backupMsg,
+			"Backup",
+			nil,
+		)
+
+		// Create a channel to send progress updates with a small buffer
+		updateCh := make(chan string, 5)
+
+		// Create a goroutine to process updates and send them to the UI
+		go func() {
+			for msg := range updateCh {
+				// Limit the number of system messages to reduce memory usage
+				if len(m.systemMessages) > 50 {
+					// Keep only the first 25 and last 24 messages
+					truncatedMessages := make([]string, 0, 50)
+					truncatedMessages = append(truncatedMessages, m.systemMessages[:25]...)
+					truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
+					truncatedMessages = append(truncatedMessages, m.systemMessages[len(m.systemMessages)-24:]...)
+					m.systemMessages = truncatedMessages
+				}
+
+				m.systemMessages = append(m.systemMessages, msg)
+				m.currentStep = msg
+
+				// Sleep briefly to allow UI updates to be processed
+				time.Sleep(100 * time.Millisecond)
+			}
+		}()
 
 		err = os.MkdirAll(backupDir, 0755)
 		if err != nil {
 			progressMsg.Error = fmt.Errorf("failed to create backup directory: %w", err)
+			close(updateCh)
 			return progressMsg
 		}
 
@@ -286,44 +345,63 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 		dirsToBackup := []struct {
 			source      string
 			destination string
+			exists      bool
 		}{
-			{".config", ".config.bak"},
-			{".local", ".local.bak"},
-			{".ags", ".ags.bak"},
-			{".fonts", ".fonts.bak"},
-			{"Pictures", "Pictures.bak"},
+			{".config", ".config.bak", false},
+			{".local", ".local.bak", false},
+			{".ags", ".ags.bak", false},
+			{".fonts", ".fonts.bak", false},
+			{"Pictures", "Pictures.bak", false},
+		}
+
+		// Check which directories exist
+		for i, dir := range dirsToBackup {
+			sourceDir := filepath.Join(homeDir, dir.source)
+			if _, err := os.Stat(sourceDir); err == nil {
+				dirsToBackup[i].exists = true
+				updateCh <- fmt.Sprintf("Found directory to backup: %s", dir.source)
+			} else {
+				updateCh <- fmt.Sprintf("Directory does not exist, will skip: %s", dir.source)
+			}
 		}
 
 		// Backup each directory if it exists
 		for _, dir := range dirsToBackup {
+			if !dir.exists {
+				continue
+			}
+
 			sourceDir := filepath.Join(homeDir, dir.source)
 			destDir := filepath.Join(backupDir, dir.destination)
 
-			// Check if the source directory exists
-			if _, err := os.Stat(sourceDir); err == nil {
-				m.systemMessages = append(m.systemMessages, fmt.Sprintf("Backing up %s to %s", dir.source, dir.destination))
+			backupMsg := fmt.Sprintf("Backing up %s to %s", dir.source, dir.destination)
+			updateCh <- backupMsg
 
-				// Create parent directories if needed
-				err = os.MkdirAll(filepath.Dir(destDir), 0755)
-				if err != nil {
-					progressMsg.Error = fmt.Errorf("failed to create backup directory for %s: %w", dir.source, err)
-					return progressMsg
-				}
-
-				// Copy the directory
-				err = utils.CopyDir(sourceDir, destDir)
-				if err != nil {
-					progressMsg.Error = fmt.Errorf("failed to backup %s directory: %w", dir.source, err)
-					return progressMsg
-				}
-
-				m.systemMessages = append(m.systemMessages, fmt.Sprintf("Successfully backed up %s to %s", dir.source, dir.destination))
-			} else {
-				m.systemMessages = append(m.systemMessages, fmt.Sprintf("Skipping backup of %s: directory does not exist", dir.source))
+			// Create parent directories if needed
+			err = os.MkdirAll(filepath.Dir(destDir), 0755)
+			if err != nil {
+				progressMsg.Error = fmt.Errorf("failed to create backup directory for %s: %w", dir.source, err)
+				close(updateCh)
+				return progressMsg
 			}
+
+			// Use rsync-like approach for copying to reduce memory usage
+			// This copies files one by one instead of loading entire directories into memory
+			err = utils.CopyDirWithLowMemory(sourceDir, destDir)
+			if err != nil {
+				progressMsg.Error = fmt.Errorf("failed to backup %s directory: %w", dir.source, err)
+				close(updateCh)
+				return progressMsg
+			}
+
+			updateCh <- fmt.Sprintf("Successfully backed up %s to %s", dir.source, dir.destination)
 		}
 
-		m.systemMessages = append(m.systemMessages, "Backup completed successfully")
+		updateCh <- "Backup completed successfully"
+		close(updateCh)
+
+		// Sleep briefly to allow final updates to be processed
+		time.Sleep(500 * time.Millisecond)
 
 		// Proceed with dotfiles installation
 		return m.installDotfiles()()
@@ -333,76 +411,131 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 // installDotfiles installs the dotfiles
 func (m *Model) installDotfiles() tea.Cmd {
 	return func() tea.Msg {
-		return m.handlePostInstallation()()
-	}
-}
-
-// handlePostInstallation handles post-installation tasks
-func (m *Model) handlePostInstallation() tea.Cmd {
-	return func() tea.Msg {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return NewInstallProgressMsg(
-				m.installProgress,
-				m.totalSteps,
-				"Failed to get home directory",
-				"Post-Installation",
-				err,
-			)
-		}
-
-		// Clone the repository to ~/Lunaric
+		// Update progress
 		m.installProgress++
 		progressMsg := NewInstallProgressMsg(
 			m.installProgress,
 			m.totalSteps,
-			"Cloning configuration repository...",
+			"Installing dotfiles...",
 			"Post-Installation",
 			nil,
 		)
 
-		// Add system message
-		m.systemMessages = append(m.systemMessages, fmt.Sprintf("Cloning configuration repository from %s", config.ConfigRepo))
+		// Create a channel to send progress updates with a small buffer
+		updateCh := make(chan string, 5)
+
+		// Create a goroutine to process updates and send them to the UI
+		go func() {
+			for msg := range updateCh {
+				// Limit the number of system messages to reduce memory usage
+				if len(m.systemMessages) > 50 {
+					// Keep only the first 25 and last 24 messages
+					truncatedMessages := make([]string, 0, 50)
+					truncatedMessages = append(truncatedMessages, m.systemMessages[:25]...)
+					truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
+					truncatedMessages = append(truncatedMessages, m.systemMessages[len(m.systemMessages)-24:]...)
+					m.systemMessages = truncatedMessages
+				}
+
+				m.systemMessages = append(m.systemMessages, msg)
+				m.currentStep = msg
+
+				// Sleep briefly to allow UI updates to be processed
+				time.Sleep(100 * time.Millisecond)
+			}
+		}()
+
+		updateCh <- "Starting dotfiles installation..."
+
+		// Get home directory
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			progressMsg.Error = fmt.Errorf("failed to get home directory: %w", err)
+			close(updateCh)
+			return progressMsg
+		}
+
+		// Clone the repository to ~/Lunaric
+		updateCh <- fmt.Sprintf("Cloning configuration repository from %s", config.ConfigRepo)
 
 		// Create the Lunaric directory in the user's home directory
 		lunaricDir := filepath.Join(homeDir, "Lunaric")
 
 		// Remove the directory if it already exists
 		if _, err := os.Stat(lunaricDir); err == nil {
-			m.systemMessages = append(m.systemMessages, fmt.Sprintf("Removing existing directory: %s", lunaricDir))
+			updateCh <- fmt.Sprintf("Removing existing directory: %s", lunaricDir)
 			err = os.RemoveAll(lunaricDir)
 			if err != nil {
 				progressMsg.Error = fmt.Errorf("failed to remove existing Lunaric directory: %w", err)
+				close(updateCh)
 				return progressMsg
 			}
 		}
 
-		// Clone the repository with output capture
-		var stdout, stderr bytes.Buffer
-		cmd := exec.Command("git", "clone", "--depth=1", config.ConfigRepo, lunaricDir)
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		err = cmd.Run()
+		// Clone the repository with output capture but use a pipe to reduce memory usage
+		cmd := exec.Command("git", "clone", "--depth=1", "--single-branch", config.ConfigRepo, lunaricDir)
 
-		// Add output to system messages
-		if stdout.Len() > 0 {
-			m.systemMessages = append(m.systemMessages, stdout.String())
+		// Set up pipes for stdout and stderr
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			progressMsg.Error = fmt.Errorf("failed to create stdout pipe: %w", err)
+			close(updateCh)
+			return progressMsg
 		}
-		if stderr.Len() > 0 {
-			m.systemMessages = append(m.systemMessages, stderr.String())
+
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			progressMsg.Error = fmt.Errorf("failed to create stderr pipe: %w", err)
+			close(updateCh)
+			return progressMsg
 		}
+
+		updateCh <- "Running git clone command..."
+
+		// Start the command
+		if err := cmd.Start(); err != nil {
+			progressMsg.Error = fmt.Errorf("failed to start git clone: %w", err)
+			close(updateCh)
+			return progressMsg
+		}
+
+		// Process output in a separate goroutine
+		outputDone := make(chan struct{})
+		go func() {
+			defer close(outputDone)
+
+			// Use scanners to read output line by line
+			stdoutScanner := bufio.NewScanner(stdout)
+			stderrScanner := bufio.NewScanner(stderr)
+
+			// Process stdout
+			go func() {
+				for stdoutScanner.Scan() {
+					line := stdoutScanner.Text()
+					if line != "" {
+						updateCh <- line
+					}
+				}
+			}()
+
+			// Process stderr
+			for stderrScanner.Scan() {
+				line := stderrScanner.Text()
+				if line != "" {
+					updateCh <- line
+				}
+			}
+		}()
+
+		// Wait for the command to complete
+		err = cmd.Wait()
+
+		// Wait for output processing to complete
+		<-outputDone
 
 		if err != nil {
-			// Provide detailed error message
-			errMsg := stderr.String()
-			if errMsg == "" {
-				errMsg = stdout.String()
-			}
-			if errMsg == "" {
-				errMsg = err.Error()
-			}
-
-			progressMsg.Error = fmt.Errorf("git clone failed: %s", errMsg)
+			progressMsg.Error = fmt.Errorf("git clone failed: %v", err)
+			close(updateCh)
 			return progressMsg
 		}
 
@@ -410,52 +543,68 @@ func (m *Model) handlePostInstallation() tea.Cmd {
 		files, err := os.ReadDir(lunaricDir)
 		if err != nil || len(files) == 0 {
 			progressMsg.Error = fmt.Errorf("repository cloned but appears to be empty")
+			close(updateCh)
 			return progressMsg
 		}
 
-		m.systemMessages = append(m.systemMessages, "Repository cloned successfully")
+		updateCh <- "Repository cloned successfully"
+
+		// Get list of directories to copy
+		updateCh <- "Checking which configuration directories exist in the repository..."
+
+		// Check which directories exist in the repository
+		existingDirs := []string{}
+		for _, configDir := range config.ConfigDirs {
+			sourceDir := filepath.Join(lunaricDir, configDir)
+			if _, err := os.Stat(sourceDir); !os.IsNotExist(err) {
+				existingDirs = append(existingDirs, configDir)
+				updateCh <- fmt.Sprintf("Found directory in repository: %s", configDir)
+			} else {
+				updateCh <- fmt.Sprintf("Directory not found in repository, will skip: %s", configDir)
+			}
+		}
 
 		// Copy configuration files from the cloned repository to the user's home directory
-		for _, configDir := range config.ConfigDirs {
-			m.installProgress++
-			progressMsg := NewInstallProgressMsg(
-				m.installProgress,
-				m.totalSteps,
-				fmt.Sprintf("Copying %s...", configDir),
-				"Post-Installation",
-				nil,
-			)
-
-			// Add system message
-			m.systemMessages = append(m.systemMessages, fmt.Sprintf("Copying %s to user home directory", configDir))
+		for _, configDir := range existingDirs {
+			updateCh <- fmt.Sprintf("Copying %s...", configDir)
 
 			// Create the target directory
 			targetDir := filepath.Join(homeDir, configDir)
 			err := os.MkdirAll(filepath.Dir(targetDir), 0755)
 			if err != nil {
 				progressMsg.Error = fmt.Errorf("failed to create directory %s: %w", targetDir, err)
+				close(updateCh)
 				return progressMsg
 			}
 
-			// Copy the configuration files
+			// Copy the configuration files using the low memory copy function
 			sourceDir := filepath.Join(lunaricDir, configDir)
-			if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
-				// Log that we're skipping this directory
-				m.systemMessages = append(m.systemMessages, fmt.Sprintf("Skipping %s: directory does not exist in the repository", configDir))
-				continue
-			}
-
-			err = utils.CopyDir(sourceDir, targetDir)
+			err = utils.CopyDirWithLowMemory(sourceDir, targetDir)
 			if err != nil {
 				progressMsg.Error = fmt.Errorf("failed to copy files to %s: %w", targetDir, err)
+				close(updateCh)
 				return progressMsg
 			}
 
-			m.systemMessages = append(m.systemMessages, fmt.Sprintf("Successfully copied %s", configDir))
+			updateCh <- fmt.Sprintf("Successfully copied %s", configDir)
+
+			// Update progress for each directory copied
+			m.installProgress++
+			progressMsg = NewInstallProgressMsg(
+				m.installProgress,
+				m.totalSteps,
+				fmt.Sprintf("Copied %s", configDir),
+				"Post-Installation",
+				nil,
+			)
 		}
 
 		// Add final system message
-		m.systemMessages = append(m.systemMessages, "Installation complete!")
+		updateCh <- "Dotfiles installation complete!"
+		close(updateCh)
+
+		// Sleep briefly to allow final updates to be processed
+		time.Sleep(500 * time.Millisecond)
 
 		// Installation complete
 		return NewCompleteMsg()

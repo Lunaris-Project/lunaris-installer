@@ -13,11 +13,6 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 
-	// If help is shown, render help
-	if m.showHelp {
-		return m.help.View(m.keyMap)
-	}
-
 	// If awaiting password, render password prompt
 	if m.awaitingPassword {
 		return m.renderPasswordPrompt()
@@ -43,8 +38,14 @@ func (m Model) View() string {
 		content = m.renderCompletePage()
 	}
 
-	// Add help hint at the bottom
-	helpHint := DimStyle.Render("Press ? for help")
+	// If help is shown, render help as a dropdown below the content
+	if m.showHelp {
+		helpContent := m.renderHelpDropdown()
+		content = lipgloss.JoinVertical(lipgloss.Center, content, helpContent)
+	}
+
+	// Center the content horizontally
+	content = m.centerHorizontally(content)
 
 	// Center the content vertically based on terminal height
 	if m.height > 0 {
@@ -56,7 +57,34 @@ func (m Model) View() string {
 		}
 	}
 
+	// Add help hint at the bottom
+	helpHint := DimStyle.Render("Press ? for help")
+
+	// Center the help hint horizontally
+	helpHint = m.centerHorizontally(helpHint)
+
 	return lipgloss.JoinVertical(lipgloss.Center, content, helpHint)
+}
+
+// centerHorizontally centers content horizontally in the terminal
+func (m Model) centerHorizontally(content string) string {
+	lines := strings.Split(content, "\n")
+	centeredLines := make([]string, len(lines))
+
+	for i, line := range lines {
+		// Calculate visible width (without ANSI escape sequences)
+		visibleWidth := lipgloss.Width(line)
+
+		// Calculate padding needed
+		padding := (m.width - visibleWidth) / 2
+		if padding > 0 {
+			centeredLines[i] = strings.Repeat(" ", padding) + line
+		} else {
+			centeredLines[i] = line
+		}
+	}
+
+	return strings.Join(centeredLines, "\n")
 }
 
 // renderPasswordPrompt renders the password prompt
@@ -613,6 +641,65 @@ func (m Model) renderButton(text string, selected bool) string {
 		return ButtonStyle.Copy().Background(primaryColor).Render(text)
 	}
 	return ButtonStyle.Render(text)
+}
+
+// renderHelpDropdown renders the help content as a dropdown
+func (m Model) renderHelpDropdown() string {
+	// Calculate box width based on terminal width
+	boxWidth := min(m.width-10, 80)
+
+	// Create a styled box for the help content
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(dimmedColor).
+		Padding(1, 2).
+		Width(boxWidth).
+		Align(lipgloss.Left)
+
+	// Create the help content
+	var helpContent strings.Builder
+	helpContent.WriteString(lipgloss.NewStyle().Bold(true).Render("Keyboard Controls:"))
+	helpContent.WriteString("\n\n")
+
+	// Add key bindings in a more readable format
+	keyBindings := []struct {
+		key         string
+		description string
+	}{
+		{"↑/k", "Move up"},
+		{"↓/j", "Move down"},
+		{"←/h", "Move left/back"},
+		{"→/l", "Move right/forward"},
+		{"Enter/Space", "Select/Confirm"},
+		{"Tab", "Switch focus"},
+		{"Esc", "Go back"},
+		{"q/Ctrl+C", "Quit"},
+		{"?", "Toggle help"},
+	}
+
+	// Format key bindings in two columns
+	for _, kb := range keyBindings {
+		keyStyle := lipgloss.NewStyle().
+			Foreground(primaryColor).
+			Bold(true).
+			Width(15).
+			Align(lipgloss.Left)
+
+		descStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Width(boxWidth - 20)
+
+		line := lipgloss.JoinHorizontal(
+			lipgloss.Left,
+			keyStyle.Render(kb.key),
+			descStyle.Render(kb.description),
+		)
+
+		helpContent.WriteString(line)
+		helpContent.WriteString("\n")
+	}
+
+	return boxStyle.Render(helpContent.String())
 }
 
 // Helper functions for min and max are already defined elsewhere in the codebase

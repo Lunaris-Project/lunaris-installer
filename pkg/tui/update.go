@@ -1,10 +1,10 @@
 package tui
 
 import (
+	"github.com/Lunaris-Project/lunaris-installer/pkg/aur"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nixev/hyprland-installer/pkg/aur"
 )
 
 // Update updates the model based on the message
