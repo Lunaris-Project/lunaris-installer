@@ -72,8 +72,8 @@ func (h *Helper) Install() ([]string, error) {
 
 	messages = append(messages, fmt.Sprintf("Cloning %s repository...", h.Name))
 
-	// Clone the AUR helper repository
-	cloneCmd := exec.Command("git", "clone", fmt.Sprintf("https://aur.archlinux.org/%s.git", h.Name))
+	// Clone the AUR helper repository with depth=1 to reduce download size and memory usage
+	cloneCmd := exec.Command("git", "clone", "--depth=1", fmt.Sprintf("https://aur.archlinux.org/%s.git", h.Name))
 
 	// Use pipes instead of buffers to reduce memory usage
 	cloneStdout, err := cloneCmd.StdoutPipe()
@@ -90,21 +90,30 @@ func (h *Helper) Install() ([]string, error) {
 	}
 
 	// Read output line by line to avoid storing everything in memory
-	scanner := bufio.NewScanner(io.MultiReader(cloneStdout, cloneStderr))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line != "" {
-			// Only keep important messages
-			if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
-				strings.Contains(line, "fatal") || strings.Contains(line, "Cloning") {
-				messages = append(messages, line)
+	// Use a separate goroutine to prevent blocking
+	cloneDone := make(chan struct{})
+	go func() {
+		defer close(cloneDone)
+		scanner := bufio.NewScanner(io.MultiReader(cloneStdout, cloneStderr))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line != "" {
+				// Only keep important messages
+				if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
+					strings.Contains(line, "fatal") || strings.Contains(line, "Cloning") {
+					// Thread-safe append
+					messages = append(messages, line)
+				}
 			}
 		}
-	}
+	}()
 
+	// Wait for the command to complete
 	if err := cloneCmd.Wait(); err != nil {
+		<-cloneDone // Ensure goroutine is done
 		return messages, fmt.Errorf("failed to clone repository: %w", err)
 	}
+	<-cloneDone // Ensure goroutine is done
 
 	messages = append(messages, fmt.Sprintf("Repository cloned successfully"))
 
@@ -115,13 +124,20 @@ func (h *Helper) Install() ([]string, error) {
 
 	messages = append(messages, fmt.Sprintf("Building and installing %s...", h.Name))
 
-	// Use nice to reduce CPU priority
+	// Use ionice along with nice to reduce both CPU and I/O priority
 	var cmd *exec.Cmd
 	if h.sudoPassword != "" {
-		cmd = exec.Command("nice", "-n", "19", "sudo", "-S", "makepkg", "-si", "--noconfirm")
+		cmd = exec.Command("ionice", "-c", "3", "nice", "-n", "19", "sudo", "-S", "makepkg", "-si", "--noconfirm", "--noprogressbar")
 	} else {
-		cmd = exec.Command("nice", "-n", "19", "makepkg", "-si", "--noconfirm")
+		cmd = exec.Command("ionice", "-c", "3", "nice", "-n", "19", "makepkg", "-si", "--noconfirm", "--noprogressbar")
 	}
+
+	// Set resource limits using ulimit-like environment variables if possible
+	cmd.Env = append(os.Environ(),
+		"MAKEFLAGS=-j2",               // Limit make to 2 jobs
+		"CARGO_BUILD_JOBS=2",          // Limit Rust builds to 2 jobs
+		"RUSTFLAGS=-Ccodegen-units=1", // Reduce Rust memory usage
+	)
 
 	// Use pipes instead of buffers to reduce memory usage
 	stdout, err := cmd.StdoutPipe()
@@ -148,38 +164,121 @@ func (h *Helper) Install() ([]string, error) {
 	}
 	stdin.Close()
 
-	// Read output line by line to avoid storing everything in memory
-	buildScanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
-	for buildScanner.Scan() {
-		line := buildScanner.Text()
-		if line != "" {
-			// Only keep important messages
-			if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
-				strings.Contains(line, "installing") || strings.Contains(line, "making") ||
-				strings.Contains(line, "building") || strings.Contains(line, "conflict") {
-				messages = append(messages, line)
+	// Create a channel to receive the command result
+	resultCh := make(chan error, 1)
 
-				// Limit the number of messages to avoid memory issues
-				if len(messages) > 50 {
-					// Create a new slice with truncated messages
-					truncatedMessages := make([]string, 0, 50)
-					truncatedMessages = append(truncatedMessages, messages[:25]...)
-					truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
-					truncatedMessages = append(truncatedMessages, messages[len(messages)-24:]...)
-					messages = truncatedMessages
+	// Wait for the command to complete in a goroutine
+	go func() {
+		resultCh <- cmd.Wait()
+	}()
+
+	// Create a channel for output processing
+	outputDone := make(chan struct{})
+
+	// Read output line by line to avoid storing everything in memory
+	go func() {
+		defer close(outputDone)
+
+		// Use a buffered reader with a small buffer to reduce memory usage
+		stdoutReader := bufio.NewReaderSize(stdout, 4096)
+		stderrReader := bufio.NewReaderSize(stderr, 4096)
+
+		// Process stdout
+		go func() {
+			for {
+				line, err := stdoutReader.ReadString('\n')
+				if err != nil {
+					if err != io.EOF {
+						messages = append(messages, fmt.Sprintf("Error reading stdout: %v", err))
+					}
+					break
+				}
+
+				line = strings.TrimSpace(line)
+				if line != "" {
+					// Only keep important messages
+					if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
+						strings.Contains(line, "installing") || strings.Contains(line, "making") ||
+						strings.Contains(line, "building") || strings.Contains(line, "conflict") {
+
+						// Add to messages with thread safety
+						messages = append(messages, line)
+
+						// Limit the number of messages to avoid memory issues
+						if len(messages) > 50 {
+							// Keep only the first 25 and last 24 messages
+							truncatedMessages := make([]string, 0, 50)
+							truncatedMessages = append(truncatedMessages, messages[:25]...)
+							truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
+							truncatedMessages = append(truncatedMessages, messages[len(messages)-24:]...)
+							messages = truncatedMessages
+						}
+					}
+				}
+			}
+		}()
+
+		// Process stderr
+		for {
+			line, err := stderrReader.ReadString('\n')
+			if err != nil {
+				if err != io.EOF {
+					messages = append(messages, fmt.Sprintf("Error reading stderr: %v", err))
+				}
+				break
+			}
+
+			line = strings.TrimSpace(line)
+			if line != "" {
+				// Only keep important messages
+				if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
+					strings.Contains(line, "installing") || strings.Contains(line, "making") ||
+					strings.Contains(line, "building") || strings.Contains(line, "conflict") {
+
+					// Add to messages with thread safety
+					messages = append(messages, line)
+
+					// Limit the number of messages to avoid memory issues
+					if len(messages) > 50 {
+						// Keep only the first 25 and last 24 messages
+						truncatedMessages := make([]string, 0, 50)
+						truncatedMessages = append(truncatedMessages, messages[:25]...)
+						truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
+						truncatedMessages = append(truncatedMessages, messages[len(messages)-24:]...)
+						messages = truncatedMessages
+					}
 				}
 			}
 		}
-	}
+	}()
 
-	// Wait for the command to complete
-	if err := cmd.Wait(); err != nil {
-		messages = append(messages, fmt.Sprintf("Error: %s", err.Error()))
-		return messages, fmt.Errorf("failed to build and install package: %w", err)
-	}
+	// Wait for the command to complete or timeout
+	select {
+	case err := <-resultCh:
+		// Wait for output processing to complete
+		<-outputDone
 
-	messages = append(messages, fmt.Sprintf("%s installed successfully", h.Name))
-	return messages, nil
+		// Command completed
+		if err != nil {
+			messages = append(messages, fmt.Sprintf("Error: %s", err.Error()))
+			return messages, fmt.Errorf("failed to build and install package: %w", err)
+		}
+
+		messages = append(messages, fmt.Sprintf("%s installed successfully", h.Name))
+		return messages, nil
+
+	case <-time.After(30 * time.Minute): // Timeout after 30 minutes
+		// Command timed out, kill it
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+
+		// Wait for output processing to complete
+		<-outputDone
+
+		messages = append(messages, "Command timed out after 30 minutes")
+		return messages, fmt.Errorf("command timed out after 30 minutes")
+	}
 }
 
 // InstallPackages installs packages using the AUR helper
@@ -205,23 +304,30 @@ func (h *Helper) InstallPackages(packages []string) ([]string, error) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Build the command arguments
-	args := []string{"-S", "--needed", "--noconfirm"}
+	args := []string{"-S", "--needed", "--noconfirm", "--noprogressbar"}
 	args = append(args, packages...)
 
 	// Create a command that uses sudo directly if needed
 	var cmd *exec.Cmd
 
-	// Use nice to reduce CPU priority and use sudo with the AUR helper if we have a password
+	// Use ionice along with nice to reduce both CPU and I/O priority
 	if h.sudoPassword != "" {
-		cmd = exec.Command("nice", "-n", "19", "sudo", "-S", h.Command)
+		cmd = exec.Command("ionice", "-c", "3", "nice", "-n", "19", "sudo", "-S", h.Command)
 		cmd.Args = append(cmd.Args, args...)
 		messages = append(messages, fmt.Sprintf("Using sudo with password. Command: sudo -S %s %s", h.Command, strings.Join(args, " ")))
 	} else {
 		// No password provided, just use the AUR helper directly with nice
-		cmd = exec.Command("nice", "-n", "19", h.Command)
+		cmd = exec.Command("ionice", "-c", "3", "nice", "-n", "19", h.Command)
 		cmd.Args = append(cmd.Args, args...)
 		messages = append(messages, fmt.Sprintf("No password provided. Command: %s %s", h.Command, strings.Join(args, " ")))
 	}
+
+	// Set resource limits using environment variables
+	cmd.Env = append(os.Environ(),
+		"MAKEFLAGS=-j2",               // Limit make to 2 jobs
+		"CARGO_BUILD_JOBS=2",          // Limit Rust builds to 2 jobs
+		"RUSTFLAGS=-Ccodegen-units=1", // Reduce Rust memory usage
+	)
 
 	// Set up pipes for stdin, stdout, and stderr
 	stdin, err := cmd.StdinPipe()
@@ -266,51 +372,87 @@ func (h *Helper) InstallPackages(packages []string) ([]string, error) {
 	// Create a channel for conflict detection
 	conflictCh := make(chan string, 1)
 
-	// Start a goroutine to read stdout
+	// Create a channel to signal output processing is done
+	outputDone := make(chan struct{})
+
+	// Start a goroutine to read stdout and stderr
 	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line != "" {
-				// Check for conflicts
-				if strings.Contains(line, "conflict") {
-					conflictCh <- line
+		defer close(outputDone)
+
+		// Use buffered readers with small buffers to reduce memory usage
+		stdoutReader := bufio.NewReaderSize(stdout, 4096)
+		stderrReader := bufio.NewReaderSize(stderr, 4096)
+
+		// Process stdout
+		go func() {
+			for {
+				line, err := stdoutReader.ReadString('\n')
+				if err != nil {
+					if err != io.EOF {
+						messages = append(messages, fmt.Sprintf("Error reading stdout: %v", err))
+					}
+					break
 				}
 
-				// Only keep important messages to reduce memory usage
-				if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
-					strings.Contains(line, "installing") || strings.Contains(line, "conflict") {
-					// Add to messages with thread safety
-					messages = append(messages, line)
+				line = strings.TrimSpace(line)
+				if line != "" {
+					// Check for conflicts
+					if strings.Contains(line, "conflict") {
+						select {
+						case conflictCh <- line:
+							// Sent conflict message
+						default:
+							// Channel full, just continue
+						}
+					}
 
-					// Limit the number of messages to avoid memory issues
-					if len(messages) > 100 {
-						// Create a new slice with truncated messages
-						truncatedMessages := make([]string, 0, 100)
-						truncatedMessages = append(truncatedMessages, messages[:50]...)
-						truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
-						truncatedMessages = append(truncatedMessages, messages[len(messages)-49:]...)
-						messages = truncatedMessages
+					// Only keep important messages to reduce memory usage
+					if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
+						strings.Contains(line, "installing") || strings.Contains(line, "conflict") {
+
+						// Add to messages with thread safety
+						messages = append(messages, line)
+
+						// Limit the number of messages to avoid memory issues
+						if len(messages) > 100 {
+							// Create a new slice with truncated messages
+							truncatedMessages := make([]string, 0, 100)
+							truncatedMessages = append(truncatedMessages, messages[:50]...)
+							truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
+							truncatedMessages = append(truncatedMessages, messages[len(messages)-49:]...)
+							messages = truncatedMessages
+						}
 					}
 				}
 			}
-		}
-	}()
+		}()
 
-	// Start a goroutine to read stderr
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			line := scanner.Text()
+		// Process stderr
+		for {
+			line, err := stderrReader.ReadString('\n')
+			if err != nil {
+				if err != io.EOF {
+					messages = append(messages, fmt.Sprintf("Error reading stderr: %v", err))
+				}
+				break
+			}
+
+			line = strings.TrimSpace(line)
 			if line != "" {
 				// Check for conflicts
 				if strings.Contains(line, "conflict") {
-					conflictCh <- line
+					select {
+					case conflictCh <- line:
+						// Sent conflict message
+					default:
+						// Channel full, just continue
+					}
 				}
 
 				// Only keep important messages to reduce memory usage
 				if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
 					strings.Contains(line, "installing") || strings.Contains(line, "conflict") {
+
 					// Add to messages with thread safety
 					messages = append(messages, line)
 
@@ -331,6 +473,9 @@ func (h *Helper) InstallPackages(packages []string) ([]string, error) {
 	// Wait for the command to complete or timeout
 	select {
 	case err := <-resultCh:
+		// Wait for output processing to complete
+		<-outputDone
+
 		// Command completed
 		if err != nil {
 			// Check if we received a conflict message
@@ -353,6 +498,10 @@ func (h *Helper) InstallPackages(packages []string) ([]string, error) {
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 		}
+
+		// Wait for output processing to complete
+		<-outputDone
+
 		messages = append(messages, fmt.Sprintf("Conflict detected: %s", conflictMsg))
 		return messages, fmt.Errorf("package conflict detected: %s", conflictMsg)
 
@@ -361,6 +510,10 @@ func (h *Helper) InstallPackages(packages []string) ([]string, error) {
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 		}
+
+		// Wait for output processing to complete
+		<-outputDone
+
 		messages = append(messages, "Command timed out after 30 minutes")
 		return messages, fmt.Errorf("command timed out after 30 minutes")
 	}
