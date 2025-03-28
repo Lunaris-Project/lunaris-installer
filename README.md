@@ -1,4 +1,5 @@
 # Lunaris Installer
+# !!Not Ready yet dont use it please hit the readme of HyprLuna to install the dots!!
 
 A TUI (Text User Interface) application for installing Lunaris on Arch Linux.
 
