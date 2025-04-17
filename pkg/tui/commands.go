@@ -160,8 +160,8 @@ func (m *Model) installAURHelper() tea.Cmd {
 				return progressMsg
 
 			case message := <-messagesCh:
-				// Add message to system messages
-				m.systemMessages = append(m.systemMessages, message)
+				// Add message to message queue and system messages
+				m.AddMessage(message, "aur-helper")
 
 				// Update the current step with the message
 				m.currentStep = message
@@ -180,10 +180,19 @@ func (m *Model) installAURHelper() tea.Cmd {
 				m.aurHelperInstalled = true
 
 				// Add final success message
-				m.systemMessages = append(m.systemMessages, fmt.Sprintf("%s installed successfully", m.aurHelper.Name))
+				m.AddSuccessMessage(fmt.Sprintf("%s installed successfully", m.aurHelper.Name), "aur-helper")
 
-				// Continue with package installation
-				return m.continueInstallation()()
+				// Update the phase to Package Installation
+				m.installPhase = "Package Installation"
+
+				// Send a progress update to show we're moving to the next phase
+				return NewInstallProgressMsg(
+					m.installProgress,
+					m.totalSteps,
+					"Starting package installation...",
+					"Package Installation",
+					nil,
+				)
 
 			case <-ticker.C:
 				// Check if installation is complete
@@ -192,10 +201,25 @@ func (m *Model) installAURHelper() tea.Cmd {
 					m.aurHelperInstalled = true
 
 					// Add final success message
-					m.systemMessages = append(m.systemMessages, fmt.Sprintf("%s installed successfully", m.aurHelper.Name))
+					m.AddSuccessMessage(fmt.Sprintf("%s installed successfully", m.aurHelper.Name), "aur-helper")
 
-					// Continue with package installation
-					return m.continueInstallation()()
+					// Update the phase to Package Installation
+					m.installPhase = "Package Installation"
+
+					// Create progress message
+					progressMsg := NewInstallProgressMsg(
+						m.installProgress,
+						m.totalSteps,
+						"Starting package installation...",
+						"Package Installation",
+						nil,
+					)
+
+					// Show notification and return progress message
+					return tea.Batch(
+						m.AddSuccessNotification("AUR Helper Installed", fmt.Sprintf("%s has been installed successfully", m.aurHelper.Name)),
+						func() tea.Msg { return progressMsg },
+					)()
 				}
 
 				// Return a progress message to update the UI
@@ -242,9 +266,12 @@ func (m *Model) installNextPackage() tea.Cmd {
 		// Install the package
 		messages, err := m.aurHelper.InstallPackages([]string{pkg})
 
-		// Add messages to system messages
-		if messages != nil && len(messages) > 0 {
-			m.systemMessages = append(m.systemMessages, messages...)
+		// Add messages to message queue and system messages
+		if len(messages) > 0 {
+			// Add each message to the message queue
+			for _, msg := range messages {
+				m.AddMessage(msg, "package-install")
+			}
 
 			// Update the current step with the last message
 			if len(messages) > 0 {
@@ -255,6 +282,21 @@ func (m *Model) installNextPackage() tea.Cmd {
 		if err != nil {
 			// Check if it's a conflict error
 			if strings.Contains(err.Error(), "conflict") {
+				// Extract the package name from the conflict message
+				conflictPkg := pkg
+				m.conflictPackage = conflictPkg
+
+				// If we've chosen to replace all packages, automatically replace
+				if m.replaceAllPackages {
+					// Add a message about automatically replacing
+					m.AddInfoMessage(fmt.Sprintf("Automatically replacing conflicting package: %s", conflictPkg), "conflict-resolution")
+
+					// Continue with installation
+					time.Sleep(500 * time.Millisecond) // Small delay for UI
+					return m.installNextPackage()()
+				}
+
+				// Otherwise, show conflict resolution dialog
 				m.hasConflict = true
 				m.conflictOption = 0 // Default to Skip
 				return NewConflictMsg(err.Error())
@@ -296,9 +338,9 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 		}
 
 		// Create the backup directory
-		backupDir := filepath.Join(homeDir, "Lunaric-User-Backup")
+		backupDir := filepath.Join(homeDir, "HyprLuna-User-Bak")
 		backupMsg := fmt.Sprintf("Creating backup directory: %s", backupDir)
-		m.systemMessages = append(m.systemMessages, backupMsg)
+		m.AddInfoMessage(backupMsg, "backup")
 		m.currentStep = backupMsg
 
 		// Send an update to the UI
@@ -316,17 +358,8 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 		// Create a goroutine to process updates and send them to the UI
 		go func() {
 			for msg := range updateCh {
-				// Limit the number of system messages to reduce memory usage
-				if len(m.systemMessages) > 50 {
-					// Keep only the first 25 and last 24 messages
-					truncatedMessages := make([]string, 0, 50)
-					truncatedMessages = append(truncatedMessages, m.systemMessages[:25]...)
-					truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
-					truncatedMessages = append(truncatedMessages, m.systemMessages[len(m.systemMessages)-24:]...)
-					m.systemMessages = truncatedMessages
-				}
-
-				m.systemMessages = append(m.systemMessages, msg)
+				// Add message to message queue and system messages
+				m.AddMessage(msg, "backup")
 				m.currentStep = msg
 
 				// Sleep briefly to allow UI updates to be processed
@@ -347,11 +380,9 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 			destination string
 			exists      bool
 		}{
-			{".config", ".config.bak", false},
-			{".local", ".local.bak", false},
-			{".ags", ".ags.bak", false},
-			{".fonts", ".fonts.bak", false},
-			{"Pictures", "Pictures.bak", false},
+			{".config", ".config", false},
+			{".local", ".local", false},
+			{".ags", ".ags", false},
 		}
 
 		// Check which directories exist
@@ -403,6 +434,18 @@ func (m *Model) backupConfigDirs() tea.Cmd {
 		// Sleep briefly to allow final updates to be processed
 		time.Sleep(500 * time.Millisecond)
 
+		// Update the phase to Post-Installation
+		m.installPhase = "Post-Installation"
+
+		// Send a progress update to show we're moving to the next phase
+		progressMsg = NewInstallProgressMsg(
+			m.installProgress,
+			m.totalSteps,
+			"Starting dotfiles installation...",
+			"Post-Installation",
+			nil,
+		)
+
 		// Proceed with dotfiles installation
 		return m.installDotfiles()()
 	}
@@ -427,17 +470,8 @@ func (m *Model) installDotfiles() tea.Cmd {
 		// Create a goroutine to process updates and send them to the UI
 		go func() {
 			for msg := range updateCh {
-				// Limit the number of system messages to reduce memory usage
-				if len(m.systemMessages) > 50 {
-					// Keep only the first 25 and last 24 messages
-					truncatedMessages := make([]string, 0, 50)
-					truncatedMessages = append(truncatedMessages, m.systemMessages[:25]...)
-					truncatedMessages = append(truncatedMessages, "... (output truncated) ...")
-					truncatedMessages = append(truncatedMessages, m.systemMessages[len(m.systemMessages)-24:]...)
-					m.systemMessages = truncatedMessages
-				}
-
-				m.systemMessages = append(m.systemMessages, msg)
+				// Add message to message queue and system messages
+				m.AddMessage(msg, "dotfiles")
 				m.currentStep = msg
 
 				// Sleep briefly to allow UI updates to be processed
@@ -455,25 +489,25 @@ func (m *Model) installDotfiles() tea.Cmd {
 			return progressMsg
 		}
 
-		// Clone the repository to ~/Lunaric
+		// Clone the repository to ~/HyprLuna
 		updateCh <- fmt.Sprintf("Cloning configuration repository from %s", config.ConfigRepo)
 
-		// Create the Lunaric directory in the user's home directory
-		lunaricDir := filepath.Join(homeDir, "Lunaric")
+		// Create the HyprLuna directory in the user's home directory
+		hyprLunaDir := filepath.Join(homeDir, "HyprLuna")
 
 		// Remove the directory if it already exists
-		if _, err := os.Stat(lunaricDir); err == nil {
-			updateCh <- fmt.Sprintf("Removing existing directory: %s", lunaricDir)
-			err = os.RemoveAll(lunaricDir)
+		if _, err := os.Stat(hyprLunaDir); err == nil {
+			updateCh <- fmt.Sprintf("Removing existing directory: %s", hyprLunaDir)
+			err = os.RemoveAll(hyprLunaDir)
 			if err != nil {
-				progressMsg.Error = fmt.Errorf("failed to remove existing Lunaric directory: %w", err)
+				progressMsg.Error = fmt.Errorf("failed to remove existing HyprLuna directory: %w", err)
 				close(updateCh)
 				return progressMsg
 			}
 		}
 
 		// Clone the repository with output capture but use a pipe to reduce memory usage
-		cmd := exec.Command("git", "clone", "--depth=1", "--single-branch", config.ConfigRepo, lunaricDir)
+		cmd := exec.Command("git", "clone", "--depth=1", "--single-branch", config.ConfigRepo, hyprLunaDir)
 
 		// Set up pipes for stdout and stderr
 		stdout, err := cmd.StdoutPipe()
@@ -540,7 +574,7 @@ func (m *Model) installDotfiles() tea.Cmd {
 		}
 
 		// Check if the clone was successful by verifying directory contents
-		files, err := os.ReadDir(lunaricDir)
+		files, err := os.ReadDir(hyprLunaDir)
 		if err != nil || len(files) == 0 {
 			progressMsg.Error = fmt.Errorf("repository cloned but appears to be empty")
 			close(updateCh)
@@ -555,7 +589,7 @@ func (m *Model) installDotfiles() tea.Cmd {
 		// Check which directories exist in the repository
 		existingDirs := []string{}
 		for _, configDir := range config.ConfigDirs {
-			sourceDir := filepath.Join(lunaricDir, configDir)
+			sourceDir := filepath.Join(hyprLunaDir, configDir)
 			if _, err := os.Stat(sourceDir); !os.IsNotExist(err) {
 				existingDirs = append(existingDirs, configDir)
 				updateCh <- fmt.Sprintf("Found directory in repository: %s", configDir)
@@ -578,7 +612,7 @@ func (m *Model) installDotfiles() tea.Cmd {
 			}
 
 			// Copy the configuration files using the low memory copy function
-			sourceDir := filepath.Join(lunaricDir, configDir)
+			sourceDir := filepath.Join(hyprLunaDir, configDir)
 			err = utils.CopyDirWithLowMemory(sourceDir, targetDir)
 			if err != nil {
 				progressMsg.Error = fmt.Errorf("failed to copy files to %s: %w", targetDir, err)
@@ -597,6 +631,33 @@ func (m *Model) installDotfiles() tea.Cmd {
 				"Post-Installation",
 				nil,
 			)
+		}
+
+		// Make scripts executable
+		updateCh <- "Making scripts executable..."
+
+		// Make hypr scripts executable
+		hyprScriptsDir := filepath.Join(homeDir, ".config", "hypr", "scripts")
+		if _, err := os.Stat(hyprScriptsDir); err == nil {
+			chmodCmd := exec.Command("sh", "-c", fmt.Sprintf("chmod +x %s/*", hyprScriptsDir))
+			chmodCmd.Run()
+			updateCh <- "Made hypr scripts executable"
+		}
+
+		// Make ags scripts executable
+		agsScriptsDir := filepath.Join(homeDir, ".config", "ags", "scripts", "hyprland")
+		if _, err := os.Stat(agsScriptsDir); err == nil {
+			chmodCmd := exec.Command("sh", "-c", fmt.Sprintf("chmod +x %s/*", agsScriptsDir))
+			chmodCmd.Run()
+			updateCh <- "Made ags scripts executable"
+		}
+
+		// Run wallpaper script
+		wallpaperScript := filepath.Join(homeDir, ".config", "ags", "scripts", "color_generation", "wallpapers.sh")
+		if _, err := os.Stat(wallpaperScript); err == nil {
+			wallpaperCmd := exec.Command("sh", wallpaperScript, "-r")
+			wallpaperCmd.Run()
+			updateCh <- "Generated wallpaper colors"
 		}
 
 		// Add final system message

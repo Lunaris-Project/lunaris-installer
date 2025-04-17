@@ -4,13 +4,23 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Lunaris-Project/lunaris-installer/pkg/tui/ui"
 	"github.com/charmbracelet/lipgloss"
 )
 
 // View renders the current view of the model
 func (m Model) View() string {
+	// Create a loading screen with spinner if width is not set yet
 	if m.width == 0 {
-		return "Loading..."
+		loadingStyle := lipgloss.NewStyle().
+			Foreground(ui.TextColor).
+			Align(lipgloss.Center).
+			AlignVertical(lipgloss.Center).
+			Width(80). // Default width
+			Height(24) // Default height
+
+		spinnerText := ui.Spinner(m.spinner.View(), "Initializing...")
+		return loadingStyle.Render(spinnerText)
 	}
 
 	// If awaiting password, render password prompt
@@ -23,47 +33,86 @@ func (m Model) View() string {
 		return m.renderConflictResolution()
 	}
 
-	// Render the current page
-	var content string
-	switch m.page {
-	case WelcomePage:
-		content = m.renderWelcomePage()
-	case AURHelperPage:
-		content = m.renderAURHelperPage()
-	case PackageCategoriesPage:
-		content = m.renderPackageCategoriesPage()
-	case InstallationPage:
-		content = m.renderInstallationPage()
-	case CompletePage:
-		content = m.renderCompletePage()
+	// If we're animating, render the animation
+	if m.animating {
+		// Apply animation to content
+		var content string
+		switch m.animation.Type {
+		case ui.FadeIn, ui.SlideLeft, ui.SlideUp:
+			// For these animations, we animate the new content
+			content = ui.AnimateContent(m.nextContent, m.animation, m.width, m.height)
+		case ui.FadeOut, ui.SlideRight, ui.SlideDown:
+			// For these animations, we animate the old content
+			content = ui.AnimateContent(m.prevContent, m.animation, m.width, m.height)
+		default:
+			// Default to just showing the next content
+			content = m.nextContent
+		}
+
+		return content
 	}
+
+	// Get the current route from the router
+	currentPage := m.router.CurrentPage()
+	route, ok := m.router.GetRoute(currentPage)
+	if !ok {
+		// Create an error message if the page is not found
+		errorStyle := lipgloss.NewStyle().
+			Foreground(ui.ErrorColor).
+			Bold(true).
+			Align(lipgloss.Center).
+			AlignVertical(lipgloss.Center).
+			Width(m.width).
+			Height(m.height)
+
+		return errorStyle.Render("Error: Page not found - " + string(currentPage))
+	}
+
+	// Render the current page using the route's renderer
+	content := route.Renderer()
 
 	// If help is shown, render help as a dropdown below the content
 	if m.showHelp {
-		helpContent := m.renderHelpDropdown()
-		content = lipgloss.JoinVertical(lipgloss.Center, content, helpContent)
+		// Create a help box
+		helpBoxStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ui.AccentColor).
+			Padding(1).
+			Width(m.width-4). // Subtract some padding
+			Margin(1, 0, 0, 0)
+
+		// Render help content
+		helpContent := m.help.View(m.keyMap)
+		helpBox := helpBoxStyle.Render(helpContent)
+
+		// Join content and help box
+		return lipgloss.JoinVertical(lipgloss.Left, content, helpBox)
 	}
 
-	// Center the content horizontally
-	content = m.centerHorizontally(content)
+	// Add a footer with basic instructions
+	footerStyle := lipgloss.NewStyle().
+		Foreground(ui.DimmedColor).
+		Align(lipgloss.Right).
+		Width(m.width).
+		Margin(1, 0, 0, 0)
 
-	// Center the content vertically based on terminal height
-	if m.height > 0 {
-		contentLines := strings.Count(content, "\n") + 1
-		paddingTop := (m.height - contentLines - 1) / 2 // -1 for help hint
-		if paddingTop > 0 {
-			topPadding := strings.Repeat("\n", paddingTop)
-			content = topPadding + content
-		}
+	footer := footerStyle.Render("Press ? for help")
+
+	// Render notifications if there are any
+	notifications := m.renderNotifications()
+	if notifications != "" {
+		// Position notifications at the top right
+		notificationsStyle := lipgloss.NewStyle().
+			Align(lipgloss.Right).
+			Width(m.width)
+
+		notifications = notificationsStyle.Render(notifications)
+
+		// Add notifications above the content
+		content = lipgloss.JoinVertical(lipgloss.Left, notifications, content)
 	}
 
-	// Add help hint at the bottom
-	helpHint := DimStyle.Render("Press ? for help")
-
-	// Center the help hint horizontally
-	helpHint = m.centerHorizontally(helpHint)
-
-	return lipgloss.JoinVertical(lipgloss.Center, content, helpHint)
+	return lipgloss.JoinVertical(lipgloss.Left, content, footer)
 }
 
 // centerHorizontally centers content horizontally in the terminal
@@ -89,8 +138,27 @@ func (m Model) centerHorizontally(content string) string {
 
 // renderPasswordPrompt renders the password prompt
 func (m Model) renderPasswordPrompt() string {
-	title := TitleStyle.Render("Enter sudo password")
-	subtitle := SubtitleStyle.Render("Password is required to install packages")
+	// Use our common page container style
+	pageStyle := lipgloss.NewStyle().
+		Width(m.width).   // Use full terminal width
+		Height(m.height). // Use full terminal height
+		Align(lipgloss.Center).
+		AlignVertical(lipgloss.Center)
+
+	// Create a dynamic title with background that adapts to terminal width
+	titleStyle := lipgloss.NewStyle().
+		Foreground(ui.PrimaryColor).
+		Bold(true).
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	title := titleStyle.Render("Enter sudo password")
+	subtitle := lipgloss.NewStyle().
+		Foreground(ui.SecondaryColor).
+		Italic(true).
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center).
+		Render("Password is required to install packages")
 
 	// Render password field
 	var passwordDisplay string
@@ -102,13 +170,24 @@ func (m Model) renderPasswordPrompt() string {
 
 	// Adjust box width based on terminal width
 	boxWidth := min(m.width-10, 60)
-	passwordField := BoxStyle.Copy().Width(boxWidth).Render(passwordDisplay)
+
+	// Create a box for the password field
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ui.AccentColor).
+		Padding(1, 2).
+		Width(boxWidth).
+		Align(lipgloss.Center)
+
+	passwordField := boxStyle.Render(passwordDisplay)
 
 	// Render instructions
-	instructions := InfoStyle.Render("Press Enter to submit, Esc to cancel, Tab to toggle visibility")
+	instructions := lipgloss.NewStyle().
+		Foreground(ui.TextColor).
+		Render("Press Enter to submit, Esc to cancel, Tab to toggle visibility")
 
-	// Center everything horizontally
-	return lipgloss.JoinVertical(
+	// Combine the content
+	content := lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
 		subtitle,
@@ -117,39 +196,141 @@ func (m Model) renderPasswordPrompt() string {
 		"",
 		instructions,
 	)
+
+	// Return the centered content
+	return pageStyle.Render(content)
 }
 
 // renderConflictResolution renders the conflict resolution dialog
 func (m Model) renderConflictResolution() string {
-	title := TitleStyle.Render("Package Conflict")
+	// Use our common page container style
+	pageStyle := lipgloss.NewStyle().
+		Width(m.width).   // Use full terminal width
+		Height(m.height). // Use full terminal height
+		Align(lipgloss.Center).
+		AlignVertical(lipgloss.Center)
+
+	// Create a dynamic title with background that adapts to terminal width
+	titleStyle := lipgloss.NewStyle().
+		Foreground(ui.ErrorColor).
+		Bold(true).
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	title := titleStyle.Render("Package Conflict Detected")
+
+	// Create a subtitle with more information
+	subtitleStyle := lipgloss.NewStyle().
+		Foreground(ui.SecondaryColor).
+		Italic(true).
+		Width(min(m.width, 80)).
+		Align(lipgloss.Center)
+
+	subtitle := subtitleStyle.Render("Please select how to resolve this conflict")
 
 	// Adjust box width based on terminal width
 	boxWidth := min(m.width-10, 70)
-	message := BoxStyle.Copy().Width(boxWidth).Render(m.conflictMessage)
 
-	// Render options
-	options := []string{
-		m.renderOption("Skip", m.conflictOption == 0),
-		m.renderOption("Replace", m.conflictOption == 1),
-		m.renderOption("Cancel", m.conflictOption == 2),
+	// Create a box for the conflict message
+	messageBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ui.ErrorColor).
+		Padding(1, 2).
+		Width(boxWidth).
+		Align(lipgloss.Left)
+
+	// Format the conflict message with error styling
+	formattedMessage := lipgloss.NewStyle().
+		Foreground(ui.TextColor).
+		Render(m.conflictMessage)
+
+	message := messageBox.Render(formattedMessage)
+
+	// Render options with descriptions
+	options := []struct {
+		name        string
+		description string
+		selected    bool
+	}{
+		{"Skip", "Skip this package and continue installation", m.conflictOption == 0},
+		{"Replace", "Replace the existing package with the new one", m.conflictOption == 1},
+		{"All", "Replace all conflicting packages automatically", m.conflictOption == 2},
+		{"Cancel", "Cancel the installation process", m.conflictOption == 3},
 	}
 
-	optionsStr := lipgloss.JoinVertical(lipgloss.Left, options...)
+	// Format options with descriptions
+	formattedOptions := []string{}
+	for _, option := range options {
+		// Create option with name and description
+		optionStyle := lipgloss.NewStyle().
+			Width(boxWidth - 4).
+			Align(lipgloss.Left)
+
+		// Format the option name
+		nameStyle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(ui.PrimaryColor)
+
+		if option.selected {
+			nameStyle = nameStyle.Copy().
+				Foreground(ui.AccentColor).
+				Underline(true)
+		}
+
+		// Format the option description
+		descStyle := lipgloss.NewStyle().
+			Foreground(ui.DimmedColor).
+			Italic(true)
+
+		// Combine name and description
+		var nameText string
+		if option.selected {
+			nameText = "▶ " + option.name
+		} else {
+			nameText = "  " + option.name
+		}
+
+		optionText := lipgloss.JoinVertical(
+			lipgloss.Left,
+			nameStyle.Render(nameText),
+			descStyle.Render("   "+option.description),
+		)
+
+		formattedOptions = append(formattedOptions, optionStyle.Render(optionText))
+	}
+
+	optionsStr := lipgloss.JoinVertical(lipgloss.Left, formattedOptions...)
+
+	// Create a box for the options
+	optionsBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ui.AccentColor).
+		Padding(1, 2).
+		Width(boxWidth).
+		Align(lipgloss.Left)
+
+	renderedOptionsBox := optionsBox.Render(optionsStr)
 
 	// Render instructions
-	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm")
+	instructions := lipgloss.NewStyle().
+		Foreground(ui.TextColor).
+		Render("Use Up/Down to select, Enter to confirm")
 
-	// Center everything horizontally
-	return lipgloss.JoinVertical(
+	// Combine the content
+	content := lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
+		subtitle,
 		"",
 		message,
 		"",
-		optionsStr,
+		renderedOptionsBox,
 		"",
 		instructions,
 	)
+
+	// Return the centered content
+	return pageStyle.Render(content)
 }
 
 // renderSystemMessages renders the system messages box efficiently
@@ -157,27 +338,52 @@ func (m Model) renderSystemMessages() string {
 	// Calculate dynamic width based on terminal size
 	boxWidth := max(min(m.width-10, 100), 40) // Min 40, max 100, or terminal width - 10
 
-	if len(m.systemMessages) == 0 {
-		// Empty box with placeholder text
-		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(dimmedColor).
-			Padding(1, 2).
-			Width(boxWidth).
-			Height(6).
-			Align(lipgloss.Center).
-			Render(DimStyle.Render("System messages will appear here..."))
+	// Add a title for the messages box
+	title := lipgloss.NewStyle().
+		Foreground(ui.PrimaryColor).
+		Bold(true).
+		Render("Command Output")
+
+	// Create box style for messages
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ui.PrimaryColor).
+		Padding(1, 2).
+		Width(boxWidth).
+		Height(15) // Increased height for better visibility
+
+	// If we have a message queue, use it
+	if m.messageQueue != nil && m.messageQueue.Size() > 0 {
+		// Get the last 15 messages
+		messages := m.messageQueue.GetLast(15)
+
+		// Render messages using the message renderer
+		messagesBox := m.messageRenderer.Render(messages, boxStyle)
+
+		return lipgloss.JoinVertical(lipgloss.Left, title, messagesBox)
 	}
 
-	// Get the last few messages (up to 5)
+	// Fallback to legacy system messages
+	if len(m.systemMessages) == 0 {
+		// Empty box with placeholder text
+		emptyBox := boxStyle.Copy().
+			Align(lipgloss.Center).
+			Render(lipgloss.NewStyle().
+				Foreground(ui.DimmedColor).
+				Render("Command output will appear here..."))
+
+		return lipgloss.JoinVertical(lipgloss.Left, title, emptyBox)
+	}
+
+	// Get the last several messages (up to 15 for better visibility)
 	startIdx := 0
-	if len(m.systemMessages) > 5 {
-		startIdx = len(m.systemMessages) - 5
+	if len(m.systemMessages) > 15 {
+		startIdx = len(m.systemMessages) - 15
 	}
 
 	recentMessages := m.systemMessages[startIdx:]
 
-	// Format messages with timestamps and colors
+	// Format messages with colors
 	formattedMessages := make([]string, 0, len(recentMessages))
 	for _, msg := range recentMessages {
 		// Colorize based on message content
@@ -185,9 +391,9 @@ func (m Model) renderSystemMessages() string {
 		switch {
 		case strings.Contains(strings.ToLower(msg), "error") || strings.Contains(strings.ToLower(msg), "failed") || strings.Contains(strings.ToLower(msg), "conflict"):
 			formattedMsg = ErrorStyle.Render(msg)
-		case strings.Contains(strings.ToLower(msg), "success") || strings.Contains(strings.ToLower(msg), "complete"):
+		case strings.Contains(strings.ToLower(msg), "success") || strings.Contains(strings.ToLower(msg), "complete") || strings.Contains(strings.ToLower(msg), "installed"):
 			formattedMsg = SuccessStyle.Render(msg)
-		case strings.Contains(strings.ToLower(msg), "installing") || strings.Contains(strings.ToLower(msg), "building"):
+		case strings.Contains(strings.ToLower(msg), "installing") || strings.Contains(strings.ToLower(msg), "building") || strings.Contains(strings.ToLower(msg), "backing up"):
 			formattedMsg = InfoStyle.Render(msg)
 		default:
 			formattedMsg = BaseStyle.Render(msg)
@@ -198,63 +404,82 @@ func (m Model) renderSystemMessages() string {
 	messagesText := strings.Join(formattedMessages, "\n")
 
 	// Create a scrollable box with system messages
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(dimmedColor).
-		Padding(1, 2).
-		Width(boxWidth).
-		Height(6).
-		Render(messagesText)
+	messagesBox := boxStyle.Render(messagesText)
+
+	return lipgloss.JoinVertical(lipgloss.Left, title, messagesBox)
 }
 
 // renderWelcomePage renders the welcome page
 func (m Model) renderWelcomePage() string {
+	// Use our common page container style
+	pageStyle := PageContainer.Copy().
+		Width(m.width).  // Use full terminal width
+		Height(m.height) // Use full terminal height
+
 	// Create a dynamic title with background that adapts to terminal width
 	titleStyle := TitleStyle.Copy().
 		Width(min(m.width, 80)).
-		Align(lipgloss.Center)
+		Align(lipgloss.Center).
+		Bold(true)
 
-	title := titleStyle.Render("Welcome to Lunaris Installer")
+	title := titleStyle.Render("Welcome to HyprLuna Installer")
 	subtitle := SubtitleStyle.Copy().
 		Width(min(m.width, 80)).
 		Align(lipgloss.Center).
-		Render("This installer will help you set up Lunaris on your system")
+		Render("A modern Hyprland desktop environment")
 
-	// Render instructions
-	instructions := []string{
-		"• Select an AUR helper to use for installation",
-		"• Choose which packages to install",
-		"• The installer will handle the rest",
+	// Render features with consistent styling
+	features := []string{
+		"• Hyprland compositor with modern UI",
+		"• Carefully selected applications",
+		"• Thoughtful default configuration",
+		"• Easy installation and setup",
 	}
 
 	// Calculate box width based on terminal width
 	boxWidth := min(m.width-20, 70)
 
-	instructionsStr := lipgloss.JoinVertical(
-		lipgloss.Left,
-		instructions...,
-	)
+	// Style each feature
+	styledFeatures := []string{}
+	for _, feature := range features {
+		styledFeature := lipgloss.NewStyle().
+			Foreground(textColor).
+			Align(lipgloss.Left).
+			Render(feature)
+		styledFeatures = append(styledFeatures, styledFeature)
+	}
 
-	boxStyle := BoxStyle.Copy().Width(boxWidth).Align(lipgloss.Center)
-	instructionsBox := boxStyle.Render(instructionsStr)
+	// Join the features with spacing
+	featureList := lipgloss.JoinVertical(lipgloss.Left, styledFeatures...)
 
-	// Render button
-	button := m.renderButton("Continue", true)
+	// Create a box for the features using our common content box style
+	boxStyle := ContentBox.Copy().Width(boxWidth)
+	featuresBox := boxStyle.Render(featureList)
 
-	// Center everything horizontally
-	return lipgloss.JoinVertical(
+	// Render button with clear instruction
+	button := m.renderButton("Press Enter to continue", true)
+
+	// Combine the content
+	content := lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
 		subtitle,
 		"",
-		instructionsBox,
+		featuresBox,
 		"",
 		button,
 	)
+
+	// Return the centered content
+	return pageStyle.Render(content)
 }
 
 // renderAURHelperPage renders the AUR helper selection page
 func (m Model) renderAURHelperPage() string {
+	// Use our common page container style
+	pageStyle := PageContainer.Copy().
+		Width(m.width) // Use full terminal width
+
 	// Create a dynamic title with background that adapts to terminal width
 	titleStyle := TitleStyle.Copy().
 		Width(min(m.width, 80)).
@@ -276,14 +501,14 @@ func (m Model) renderAURHelperPage() string {
 
 	// Calculate box width based on terminal width
 	boxWidth := min(m.width-20, 60)
-	boxStyle := BoxStyle.Copy().Width(boxWidth).Align(lipgloss.Center)
+	boxStyle := ContentBox.Copy().Width(boxWidth)
 	optionsBox := boxStyle.Render(optionsStr)
 
 	// Render instructions
 	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm, Esc to go back")
 
-	// Center everything horizontally
-	return lipgloss.JoinVertical(
+	// Combine the content
+	content := lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
 		subtitle,
@@ -292,10 +517,17 @@ func (m Model) renderAURHelperPage() string {
 		"",
 		instructions,
 	)
+
+	// Return the centered content
+	return pageStyle.Render(content)
 }
 
 // renderPackageCategoriesPage renders the package categories page
 func (m Model) renderPackageCategoriesPage() string {
+	// Use our common page container style
+	pageStyle := PageContainer.Copy().
+		Width(m.width) // Use full terminal width
+
 	// Create a dynamic title with background that adapts to terminal width
 	titleStyle := TitleStyle.Copy().
 		Width(min(m.width, 80)).
@@ -331,33 +563,75 @@ func (m Model) renderPackageCategoriesPage() string {
 			// If this category is selected, render its options
 			if isSelected {
 				optionsContent := []string{}
-				for j, option := range category.Options {
-					isOptionSelected := j == m.optionIndex
-					isFocused := m.optionIndex != -1
 
-					// Check if this option is in the selected options
-					isChecked := false
-					if selectedOptions, ok := m.selectedOptions[category.Name]; ok {
-						for _, selectedOption := range selectedOptions {
-							if selectedOption == option.Name {
-								isChecked = true
+				// If we have filtered options, show only those
+				if len(m.filteredOptions) > 0 && m.searchQuery != "" {
+					// Show filtered options
+					for j, optionName := range m.filteredOptions {
+						// Find the option in the category
+						for _, option := range category.Options {
+							if option.Name == optionName {
+								isOptionSelected := j == m.optionIndex && m.optionIndex != -1
+								isFocused := m.optionIndex != -1
+
+								// Check if this option is in the selected options
+								isChecked := false
+								if selectedOptions, ok := m.selectedOptions[category.Name]; ok {
+									for _, selectedOption := range selectedOptions {
+										if selectedOption == option.Name {
+											isChecked = true
+											break
+										}
+									}
+								}
+
+								// Determine style based on selection and focus
+								var optionStyle lipgloss.Style
+								if isOptionSelected && isFocused {
+									optionStyle = SelectionStyle.Copy().Bold(true)
+								} else {
+									optionStyle = BaseStyle
+								}
+
+								// Render checkbox and option name with highlighted search match
+								checkbox := RenderCheckbox(isChecked)
+								highlightedName := ui.HighlightMatch(option.Name, m.searchQuery)
+								optionStr := fmt.Sprintf("%s %s", checkbox, highlightedName)
+								optionsContent = append(optionsContent, optionStyle.Render(optionStr))
 								break
 							}
 						}
 					}
+				} else {
+					// Show all options
+					for j, option := range category.Options {
+						isOptionSelected := j == m.optionIndex
+						isFocused := m.optionIndex != -1
 
-					// Determine style based on selection and focus
-					var optionStyle lipgloss.Style
-					if isOptionSelected && isFocused {
-						optionStyle = SelectionStyle.Copy().Bold(true)
-					} else {
-						optionStyle = BaseStyle
+						// Check if this option is in the selected options
+						isChecked := false
+						if selectedOptions, ok := m.selectedOptions[category.Name]; ok {
+							for _, selectedOption := range selectedOptions {
+								if selectedOption == option.Name {
+									isChecked = true
+									break
+								}
+							}
+						}
+
+						// Determine style based on selection and focus
+						var optionStyle lipgloss.Style
+						if isOptionSelected && isFocused {
+							optionStyle = SelectionStyle.Copy().Bold(true)
+						} else {
+							optionStyle = BaseStyle
+						}
+
+						// Render checkbox and option name
+						checkbox := RenderCheckbox(isChecked)
+						optionStr := fmt.Sprintf("%s %s", checkbox, option.Name)
+						optionsContent = append(optionsContent, optionStyle.Render(optionStr))
 					}
-
-					// Render checkbox and option name
-					checkbox := RenderCheckbox(isChecked)
-					optionStr := fmt.Sprintf("%s %s", checkbox, option.Name)
-					optionsContent = append(optionsContent, optionStyle.Render(optionStr))
 				}
 
 				// Indent options
@@ -377,7 +651,7 @@ func (m Model) renderPackageCategoriesPage() string {
 
 	// Calculate box width based on terminal width
 	boxWidth := min(m.width-10, 80)
-	boxStyle := BoxStyle.Copy().Width(boxWidth)
+	boxStyle := ContentBox.Copy().Width(boxWidth)
 	contentBox := boxStyle.Render(content)
 
 	// Render instructions
@@ -388,26 +662,49 @@ func (m Model) renderPackageCategoriesPage() string {
 		instructions = InfoStyle.Render("Use Up/Down to navigate, Enter to toggle, Tab to switch to categories, Esc to go back")
 	}
 
-	// Center everything horizontally
-	return lipgloss.JoinVertical(
+	// Render search box
+	searchBoxWidth := min(m.width-20, 40)
+	searchBox := ui.SearchBox(m.searchQuery, searchBoxWidth, m.searchFocused)
+
+	// Add search instructions if search is focused
+	var searchInstructions string
+	if m.searchFocused {
+		searchInstructions = lipgloss.NewStyle().
+			Foreground(ui.DimmedColor).
+			Render("Type to search, Esc to cancel, Enter to confirm")
+	}
+
+	// Combine the content
+	finalContent := lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
 		subtitle,
+		"",
+		searchBox,
+		searchInstructions,
 		"",
 		contentBox,
 		"",
 		instructions,
 	)
+
+	// Return the centered content
+	return pageStyle.Render(finalContent)
 }
 
 // renderInstallationPage renders the installation page
 func (m Model) renderInstallationPage() string {
+	// Use our common page container style
+	pageStyle := PageContainer.Copy().
+		Width(m.width) // Use full terminal width
+
 	// Create a dynamic title with background that adapts to terminal width
 	titleStyle := TitleStyle.Copy().
 		Width(min(m.width, 80)).
-		Align(lipgloss.Center)
+		Align(lipgloss.Center).
+		Bold(true)
 
-	title := titleStyle.Render("Installing Lunaris")
+	title := titleStyle.Render("Installing HyprLuna")
 
 	// If we're in the dotfiles confirmation phase
 	if m.installPhase == "dotfiles_confirmation" {
@@ -429,7 +726,7 @@ func (m Model) renderInstallationPage() string {
 	progressBarWidth := min(m.width-10, 80)
 
 	// Create a more visually appealing progress bar
-	progressBar := RenderProgressBar(progressBarWidth, progressPercentage)
+	progressBar := m.RenderProgressBar(progressBarWidth, progressPercentage)
 	progressText := fmt.Sprintf("%d/%d (%d%%)", m.installProgress, m.totalSteps, progressPercentage)
 
 	// Render current step with animated spinner
@@ -441,7 +738,7 @@ func (m Model) renderInstallationPage() string {
 		spinnerText := m.spinner.View()
 
 		// Add some color and styling to the current step
-		stepText := fmt.Sprintf("%s", m.currentStep)
+		stepText := m.currentStep
 		if m.installPhase == "AUR Helper Installation" {
 			stepText = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(stepText)
 		} else {
@@ -481,14 +778,17 @@ func (m Model) renderInstallationPage() string {
 
 	phaseInfo := phaseInfoStyle.Render(phaseDescription)
 
-	// Render system messages box
-	systemMessagesBox := m.renderSystemMessages()
+	// Create a box for the progress information
+	progressBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ui.PrimaryColor).
+		Padding(1, 2).
+		Width(min(m.width-10, 80)).
+		Align(lipgloss.Center)
 
-	// Center everything horizontally
-	return lipgloss.JoinVertical(
+	// Combine the progress elements
+	progressContent := lipgloss.JoinVertical(
 		lipgloss.Center,
-		title,
-		"",
 		phase,
 		phaseInfo,
 		"",
@@ -496,24 +796,95 @@ func (m Model) renderInstallationPage() string {
 		progressText,
 		"",
 		currentStep,
+	)
+
+	// Add task progress if there are any tasks
+	if len(m.tasks) > 0 {
+		// Create a box for the tasks
+		taskBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ui.AccentColor).
+			Padding(1, 2).
+			Width(min(m.width-10, 80)).
+			Align(lipgloss.Left)
+
+		// Render the tasks
+		taskContent := m.renderTasks()
+
+		// Add a title for the tasks
+		taskTitle := lipgloss.NewStyle().
+			Foreground(ui.AccentColor).
+			Bold(true).
+			Render("Tasks")
+
+		// Combine the title and tasks
+		taskContent = lipgloss.JoinVertical(
+			lipgloss.Left,
+			taskTitle,
+			"",
+			taskContent,
+		)
+
+		// Render the task box
+		renderedTaskBox := taskBox.Render(taskContent)
+
+		// Add the task box to the progress content
+		progressContent = lipgloss.JoinVertical(
+			lipgloss.Center,
+			progressContent,
+			"",
+			renderedTaskBox,
+		)
+	}
+
+	// Render the progress box
+	renderedProgressBox := progressBox.Render(progressContent)
+
+	// Render system messages box
+	systemMessagesBox := m.renderSystemMessages()
+
+	// Combine everything
+	content := lipgloss.JoinVertical(
+		lipgloss.Center,
+		title,
+		"",
+		renderedProgressBox,
 		"",
 		systemMessagesBox,
 	)
+
+	// Return the centered content
+	return pageStyle.Render(content)
 }
 
 // renderDotfilesConfirmation renders the dotfiles confirmation prompt
 func (m Model) renderDotfilesConfirmation() string {
+	// Use our common page container style
+	pageStyle := PageContainer.Copy().
+		Width(m.width) // Use full terminal width
+
 	// Create a dynamic title with background that adapts to terminal width
 	titleStyle := TitleStyle.Copy().
 		Width(min(m.width, 80)).
-		Align(lipgloss.Center)
+		Align(lipgloss.Center).
+		Bold(true)
 
 	title := titleStyle.Render("Dotfiles Installation")
 
 	// Calculate box width based on terminal width
 	boxWidth := min(m.width-20, 60)
-	boxStyle := BoxStyle.Copy().Width(boxWidth).Align(lipgloss.Center)
-	message := boxStyle.Render("Do you want to install the dotfiles?")
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(1, 2).
+		Width(boxWidth).
+		Align(lipgloss.Center)
+
+	// Create the message
+	messageStyle := SubtitleStyle.Copy().
+		Align(lipgloss.Center)
+
+	message := messageStyle.Render("Do you want to install the dotfiles?")
 
 	// Render options
 	options := []string{
@@ -521,37 +892,85 @@ func (m Model) renderDotfilesConfirmation() string {
 		m.renderOption("No", !m.dotfilesConfirmation),
 	}
 
-	optionsStr := lipgloss.JoinVertical(lipgloss.Left, options...)
+	optionsStr := lipgloss.JoinVertical(lipgloss.Center, options...)
 
 	// Render instructions
 	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm")
 
-	// Center everything horizontally
-	return lipgloss.JoinVertical(
+	// Combine the content
+	confirmationContent := lipgloss.JoinVertical(
 		lipgloss.Center,
-		title,
-		"",
 		message,
 		"",
 		optionsStr,
 		"",
 		instructions,
 	)
+
+	// Render the box
+	renderedBox := boxStyle.Render(confirmationContent)
+
+	// Combine everything
+	content := lipgloss.JoinVertical(
+		lipgloss.Center,
+		title,
+		"",
+		renderedBox,
+	)
+
+	// Return the centered content
+	return pageStyle.Render(content)
 }
 
 // renderBackupConfirmation renders the backup confirmation prompt
 func (m Model) renderBackupConfirmation() string {
+	// Use our common page container style
+	pageStyle := PageContainer.Copy().
+		Width(m.width) // Use full terminal width
+
 	// Create a dynamic title with background that adapts to terminal width
 	titleStyle := TitleStyle.Copy().
 		Width(min(m.width, 80)).
-		Align(lipgloss.Center)
+		Align(lipgloss.Center).
+		Bold(true)
 
 	title := titleStyle.Render("Backup Configuration")
 
 	// Calculate box width based on terminal width
 	boxWidth := min(m.width-20, 70)
-	boxStyle := BoxStyle.Copy().Width(boxWidth).Align(lipgloss.Center)
-	message := boxStyle.Render("Do you want to backup your existing configuration directories before installing dotfiles?\n\nThe following directories will be backed up if they exist:\n• .config\n• .local\n• .ags\n• .fonts\n• Pictures\n\nBackups will be stored in ~/Lunaric-User-Backup/")
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(1, 2).
+		Width(boxWidth).
+		Align(lipgloss.Center)
+
+	// Create the message with better formatting
+	messageStyle := SubtitleStyle.Copy().
+		Align(lipgloss.Center)
+
+	messageHeader := messageStyle.Render("Do you want to backup your existing configuration directories before installing dotfiles?")
+
+	// Format the directories list
+	dirsList := []string{
+		"• .config",
+		"• .local",
+		"• .ags",
+	}
+
+	styledDirs := []string{}
+	for _, dir := range dirsList {
+		styledDir := lipgloss.NewStyle().
+			Foreground(textColor).
+			Align(lipgloss.Left).
+			Render(dir)
+		styledDirs = append(styledDirs, styledDir)
+	}
+
+	dirListStr := lipgloss.JoinVertical(lipgloss.Left, styledDirs...)
+
+	// Add the backup location info
+	backupLocation := InfoStyle.Render("Backups will be stored in ~/HyprLuna-User-Bak/")
 
 	// Render options
 	options := []string{
@@ -559,26 +978,47 @@ func (m Model) renderBackupConfirmation() string {
 		m.renderOption("No", !m.backupConfirmation),
 	}
 
-	optionsStr := lipgloss.JoinVertical(lipgloss.Left, options...)
+	optionsStr := lipgloss.JoinVertical(lipgloss.Center, options...)
 
 	// Render instructions
 	instructions := InfoStyle.Render("Use Up/Down to select, Enter to confirm")
 
-	// Center everything horizontally
-	return lipgloss.JoinVertical(
+	// Combine the content
+	confirmationContent := lipgloss.JoinVertical(
 		lipgloss.Center,
-		title,
+		messageHeader,
 		"",
-		message,
+		"The following directories will be backed up if they exist:",
+		dirListStr,
+		"",
+		backupLocation,
 		"",
 		optionsStr,
 		"",
 		instructions,
 	)
+
+	// Render the box
+	renderedBox := boxStyle.Render(confirmationContent)
+
+	// Combine everything
+	content := lipgloss.JoinVertical(
+		lipgloss.Center,
+		title,
+		"",
+		renderedBox,
+	)
+
+	// Return the centered content
+	return pageStyle.Render(content)
 }
 
 // renderCompletePage renders the complete page
 func (m Model) renderCompletePage() string {
+	// Use our common page container style
+	pageStyle := PageContainer.Copy().
+		Width(m.width) // Use full terminal width
+
 	// Create a dynamic title with background that adapts to terminal width
 	titleStyle := TitleStyle.Copy().
 		Width(min(m.width, 80)).
@@ -590,14 +1030,14 @@ func (m Model) renderCompletePage() string {
 		Width(min(m.width, 80)).
 		Align(lipgloss.Center)
 
-	message := messageStyle.Render("Lunaris has been successfully installed on your system!")
+	message := messageStyle.Render("HyprLuna has been successfully installed on your system!")
 
 	// Render instructions
 	instructions := []string{
 		"• Log out of your current session",
-		"• Select Lunaris from your display manager",
+		"• Select HyprLuna from your display manager",
 		"• Your configuration files have been installed",
-		"• If you chose to backup, your original files are in ~/Lunaric-User-Backup/",
+		"• If you chose to backup, your original files are in ~/HyprLuna-User-Bak/",
 		"• Enjoy your new desktop environment!",
 	}
 
@@ -608,14 +1048,14 @@ func (m Model) renderCompletePage() string {
 
 	// Calculate box width based on terminal width
 	boxWidth := min(m.width-20, 70)
-	boxStyle := BoxStyle.Copy().Width(boxWidth).Align(lipgloss.Center)
+	boxStyle := ContentBox.Copy().Width(boxWidth)
 	instructionsBox := boxStyle.Render(instructionsStr)
 
 	// Render button
 	button := m.renderButton("Exit", true)
 
-	// Center everything horizontally
-	return lipgloss.JoinVertical(
+	// Combine the content
+	content := lipgloss.JoinVertical(
 		lipgloss.Center,
 		title,
 		"",
@@ -625,22 +1065,19 @@ func (m Model) renderCompletePage() string {
 		"",
 		button,
 	)
+
+	// Return the centered content
+	return pageStyle.Render(content)
 }
 
 // renderOption renders an option with selection indicator
 func (m Model) renderOption(text string, selected bool) string {
-	if selected {
-		return SelectionStyle.Render("> " + text)
-	}
-	return BaseStyle.Render("  " + text)
+	return ui.Option(text, selected)
 }
 
 // renderButton renders a button
 func (m Model) renderButton(text string, selected bool) string {
-	if selected {
-		return ButtonStyle.Copy().Background(primaryColor).Render(text)
-	}
-	return ButtonStyle.Render(text)
+	return ui.Button(text, selected)
 }
 
 // renderHelpDropdown renders the help content as a dropdown
@@ -651,14 +1088,14 @@ func (m Model) renderHelpDropdown() string {
 	// Create a styled box for the help content
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(dimmedColor).
+		BorderForeground(ui.AccentColor).
 		Padding(1, 2).
 		Width(boxWidth).
 		Align(lipgloss.Left)
 
 	// Create the help content
 	var helpContent strings.Builder
-	helpContent.WriteString(lipgloss.NewStyle().Bold(true).Render("Keyboard Controls:"))
+	helpContent.WriteString(lipgloss.NewStyle().Bold(true).Foreground(ui.PrimaryColor).Render("Keyboard Controls:"))
 	helpContent.WriteString("\n\n")
 
 	// Add key bindings in a more readable format
@@ -680,13 +1117,13 @@ func (m Model) renderHelpDropdown() string {
 	// Format key bindings in two columns
 	for _, kb := range keyBindings {
 		keyStyle := lipgloss.NewStyle().
-			Foreground(primaryColor).
+			Foreground(ui.SecondaryColor).
 			Bold(true).
 			Width(15).
 			Align(lipgloss.Left)
 
 		descStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFFFFF")).
+			Foreground(ui.TextColor).
 			Width(boxWidth - 20)
 
 		line := lipgloss.JoinHorizontal(
@@ -704,3 +1141,13 @@ func (m Model) renderHelpDropdown() string {
 
 // Helper functions for min and max are already defined elsewhere in the codebase
 // So we don't need to redefine them here
+
+// RenderProgressBar renders a progress bar
+func (m Model) RenderProgressBar(width, percent int) string {
+	return ui.ProgressBar(width, percent)
+}
+
+// RenderIndeterminateProgressBar renders an indeterminate progress bar
+func (m Model) RenderIndeterminateProgressBar(width int) string {
+	return ui.IndeterminateProgressBar(width, m.indeterminatePos)
+}

@@ -21,6 +21,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keyMap.Help):
 			m.showHelp = !m.showHelp
 			return m, nil
+
+		case key.Matches(msg, m.keyMap.Search):
+			// Toggle search focus
+			m.searchFocused = !m.searchFocused
+			if !m.searchFocused {
+				// Clear search when exiting search mode
+				m.searchQuery = ""
+				m.filteredOptions = []string{}
+			}
+			return m, nil
+
+		case key.Matches(msg, m.keyMap.Back):
+			// Handle back navigation
+			if !m.showHelp && !m.awaitingPassword && !m.hasConflict {
+				return m.router.Back(m)
+			}
 		}
 
 		// If help is shown, any key dismisses it
@@ -39,18 +55,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleConflictInput(msg)
 		}
 
-		// Page-specific key handlers
-		switch m.page {
-		case WelcomePage:
-			return m.updateWelcomePage(msg)
-		case AURHelperPage:
-			return m.updateAURHelperPage(msg)
-		case PackageCategoriesPage:
-			return m.updatePackageCategoriesPage(msg)
-		case InstallationPage:
-			return m.updateInstallationPage(msg)
-		case CompletePage:
-			return m.updateCompletePage(msg)
+		// If search is focused, handle search input
+		if m.searchFocused {
+			return m.handleSearchInput(msg)
+		}
+
+		// Get the current route
+		currentPage := m.router.CurrentPage()
+		if route, ok := m.router.GetRoute(currentPage); ok {
+			// Use the route's updater
+			return route.Updater(msg)
 		}
 
 	case tea.WindowSizeMsg:
@@ -58,19 +72,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.help.Width = msg.Width
 
+		// Update message renderer dimensions
+		m.messageRenderer.SetWidth(m.width - 10) // Subtract some padding
+		m.messageRenderer.SetHeight(15)          // Fixed height for messages
+
+		// If we're on the welcome page and just got window size, navigate to AUR helper page
+		if m.router.CurrentPage() == WelcomePage && m.animating {
+			// Stop animation and continue
+			m.animating = false
+			m.prevContent = ""
+			m.nextContent = ""
+		}
+
 	case spinner.TickMsg:
 		var spinnerCmd tea.Cmd
 		m.spinner, spinnerCmd = m.spinner.Update(msg)
-		return m, spinnerCmd
+		cmds = append(cmds, spinnerCmd)
 
 	case InstallProgressMsg:
 		return m.handleInstallProgress(msg)
+
+	case PageTransitionMsg:
+		return m.handlePageTransition(msg)
+
+	case animationTickMsg:
+		return m.handleAnimationTick()
+
+	case NotificationMsg:
+		return m.handleNotification(msg)
+
+	case dismissNotificationMsg:
+		return m.handleDismissNotification(msg)
+
+	case TaskMsg:
+		return m.handleTaskMsg(msg)
+
+	case indeterminateProgressTickMsg:
+		return m.handleIndeterminateProgressTick()
 	}
 
-	// Update spinner
-	var spinnerCmd tea.Cmd
-	m.spinner, spinnerCmd = m.spinner.Update(msg)
-	cmds = append(cmds, spinnerCmd)
+	// Return any batched commands
+	if len(cmds) == 0 {
+		return m, nil
+	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -117,21 +161,52 @@ func (m Model) handlePasswordInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleConflictInput handles conflict resolution input
 func (m Model) handleConflictInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
-	case tea.KeyUp, tea.KeyDown:
-		// Toggle between Yes and No
-		m.conflictOption = (m.conflictOption + 1) % 3
+	case tea.KeyUp:
+		// Navigate up through options
+		if m.conflictOption > 0 {
+			m.conflictOption--
+		} else {
+			m.conflictOption = 3 // Wrap to bottom
+		}
+		return m, nil
+
+	case tea.KeyDown:
+		// Navigate down through options
+		if m.conflictOption < 3 {
+			m.conflictOption++
+		} else {
+			m.conflictOption = 0 // Wrap to top
+		}
 		return m, nil
 
 	case tea.KeyEnter:
 		// Confirm selection
 		m.hasConflict = false
+
+		// Handle the selected option
+		switch m.conflictOption {
+		case 0: // Skip
+			// Add to skipped packages
+			if m.conflictPackage != "" {
+				m.skippedPackages[m.conflictPackage] = true
+			}
+		case 1: // Replace
+			// Do nothing, the package will be replaced
+		case 2: // All
+			// Set flag to replace all future conflicts
+			m.replaceAllPackages = true
+		case 3: // Cancel
+			// Return to package selection
+			m.hasConflict = false
+			return m.router.Navigate(PackageCategoriesPage, m)
+		}
+
 		return m, m.continueInstallation()
 
 	case tea.KeyEsc:
 		// Cancel conflict resolution
 		m.hasConflict = false
-		m.page = PackageCategoriesPage
-		return m, nil
+		return m.router.Navigate(PackageCategoriesPage, m)
 
 	default:
 		return m, nil
@@ -140,9 +215,10 @@ func (m Model) handleConflictInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateWelcomePage updates the welcome page
 func (m Model) updateWelcomePage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.keyMap.Select):
-		m.page = AURHelperPage
+	switch msg.Type {
+	case tea.KeyEnter, tea.KeySpace:
+		// Use the router to navigate to the AUR helper page
+		return m.router.Navigate(AURHelperPage, m)
 	}
 	return m, nil
 }
@@ -154,9 +230,9 @@ func (m Model) updateAURHelperPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.aurHelperIndex = max(0, m.aurHelperIndex-1)
 	case key.Matches(msg, m.keyMap.Down):
 		m.aurHelperIndex = min(len(m.aurHelperOptions)-1, m.aurHelperIndex+1)
-	case key.Matches(msg, m.keyMap.Select):
+	case key.Matches(msg, m.keyMap.Enter):
+		// Set the AUR helper
 		m.aurHelper = aur.NewHelper(m.aurHelperOptions[m.aurHelperIndex])
-		m.page = PackageCategoriesPage
 
 		// Initialize selected options with defaults
 		for _, category := range m.categories {
@@ -169,8 +245,12 @@ func (m Model) updateAURHelperPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+
+		// Use the router to navigate to the package categories page
+		return m.router.Navigate(PackageCategoriesPage, m)
 	case key.Matches(msg, m.keyMap.Back):
-		m.page = WelcomePage
+		// Use the router to navigate back
+		return m.router.Back(m)
 	}
 	return m, nil
 }
@@ -202,7 +282,7 @@ func (m Model) updatePackageCategoriesPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			category := m.categories[m.categoryIndex]
 			m.optionIndex = min(len(category.Options)-1, m.optionIndex+1)
 		}
-	case key.Matches(msg, m.keyMap.Select):
+	case key.Matches(msg, m.keyMap.Enter):
 		if m.optionIndex == -1 {
 			// If categories are focused, switch to options
 			m.optionIndex = 0
@@ -236,11 +316,11 @@ func (m Model) updatePackageCategoriesPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			}
 		}
 	case key.Matches(msg, m.keyMap.Back):
-		m.page = AURHelperPage
+		// Use the router to navigate back
+		return m.router.Back(m)
 	case key.Matches(msg, m.keyMap.Right):
-		// Start installation
-		m.page = InstallationPage
-		return m, m.startInstallation()
+		// Use the router to navigate to the installation page
+		return m.router.Navigate(InstallationPage, m)
 	}
 	return m, nil
 }
@@ -255,14 +335,13 @@ func (m Model) updateInstallationPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.dotfilesConfirmation = !m.dotfilesConfirmation
 			return m, nil
 
-		case tea.KeyEnter:
-			// Confirm selection
+		case tea.KeyEnter, tea.KeySpace:
+			// Confirm selection and continue installation
 			return m, m.continueInstallation()
 
 		case tea.KeyEsc:
 			// Cancel installation
-			m.page = PackageCategoriesPage
-			return m, nil
+			return m.router.Navigate(PackageCategoriesPage, m)
 		}
 	}
 
@@ -274,14 +353,13 @@ func (m Model) updateInstallationPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.backupConfirmation = !m.backupConfirmation
 			return m, nil
 
-		case tea.KeyEnter:
-			// Confirm selection
+		case tea.KeyEnter, tea.KeySpace:
+			// Confirm selection and continue installation
 			return m, m.continueInstallation()
 
 		case tea.KeyEsc:
 			// Cancel installation
-			m.page = PackageCategoriesPage
-			return m, nil
+			return m.router.Navigate(PackageCategoriesPage, m)
 		}
 	}
 
@@ -292,7 +370,7 @@ func (m Model) updateInstallationPage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // updateCompletePage updates the complete page
 func (m Model) updateCompletePage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, m.keyMap.Select):
+	case key.Matches(msg, m.keyMap.Enter):
 		return m, tea.Quit
 	}
 	return m, nil

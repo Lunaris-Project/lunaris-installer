@@ -1,15 +1,20 @@
+<<<<<<< HEAD
 # Lunaris Installer
 # !!Not Ready yet dont use it please hit the readme of HyprLuna to install the dots!!
+=======
+# HyprLuna Installer
+>>>>>>> bee28e9 (updates)
 
-A TUI (Text User Interface) application for installing Lunaris on Arch Linux.
+A TUI (Text User Interface) application for installing HyprLuna on Arch Linux.
 
 ## Features
 
 - Select an AUR helper (yay or paru)
-- Choose packages to install from various categories
-- Install Lunaris and selected packages
-- Copy configuration files
-- Clone the Lunaric repository for Lunaris configuration
+- Install base-devel and the selected AUR helper
+- Install HyprLuna packages with the chosen AUR helper
+- Option to install dotfiles with backup functionality
+- Clone the HyprLuna repository for configuration
+- Make scripts executable and set up the environment
 
 ## Requirements
 
@@ -23,19 +28,19 @@ Clone the repository:
 
 ```bash
 git clone https://github.com/Lunaris-Project/lunaris-installer.git
-cd lunaris-installer
+cd hyprland-installer
 ```
 
 Build the installer:
 
 ```bash
-go build -o lunaris-installer cmd/main.go
+go build -o hyprland-installer cmd/main.go
 ```
 
 Run the installer:
 
 ```bash
-./lunaris-installer
+./hyprland-installer
 ```
 
 ## Usage
@@ -44,8 +49,10 @@ Run the installer:
 2. Choose packages to install from various categories
 3. Start the installation
 4. Enter your sudo password when prompted
-5. Wait for the installation to complete
-6. Log out and select Lunaris from your display manager
+5. Choose whether to install dotfiles
+6. If installing dotfiles, choose whether to backup existing configuration
+7. Wait for the installation to complete
+8. Log out and select HyprLuna from your display manager
 
 ## Package Categories
 
@@ -62,11 +69,18 @@ The installer includes the following package categories:
 
 The installer copies configuration files to the following directories:
 
-- `.config/hypr`
-- `.config/waybar`
-- `.config/rofi`
-- `.config/dunst`
+- `.config` - Contains all configuration files for HyprLuna
+- `.local` - Contains local binaries and other files
+- `.fonts` - Contains fonts used by HyprLuna
+- `.ags` - Contains AGS configuration
+- `.cursor` - Contains cursor themes
+- `.vscode` - Contains VSCode configuration
+- `Pictures` - Contains wallpapers and other images
 
 ## License
 
+<<<<<<< HEAD
 MIT 
+=======
+MIT
+>>>>>>> bee28e9 (updates)

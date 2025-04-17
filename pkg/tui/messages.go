@@ -1,5 +1,7 @@
 package tui
 
+import "time"
+
 // InstallProgressMsg represents a message for installation progress updates
 type InstallProgressMsg struct {
 	Progress               int
@@ -12,6 +14,14 @@ type InstallProgressMsg struct {
 	Conflict               string
 	IsDotfilesConfirmation bool
 	IsBackupConfirmation   bool
+}
+
+// PageTransitionMsg represents a message for page transitions with animation
+type PageTransitionMsg struct {
+	FromPage Page
+	ToPage   Page
+	AnimType string
+	Duration time.Duration
 }
 
 // NewInstallProgressMsg creates a new InstallProgressMsg
@@ -55,5 +65,15 @@ func NewDotfilesConfirmationMsg() InstallProgressMsg {
 func NewBackupConfirmationMsg() InstallProgressMsg {
 	return InstallProgressMsg{
 		IsBackupConfirmation: true,
+	}
+}
+
+// NewPageTransitionMsg creates a new PageTransitionMsg
+func NewPageTransitionMsg(fromPage, toPage Page, animType string, duration time.Duration) PageTransitionMsg {
+	return PageTransitionMsg{
+		FromPage: fromPage,
+		ToPage:   toPage,
+		AnimType: animType,
+		Duration: duration,
 	}
 }

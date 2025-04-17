@@ -54,6 +54,72 @@ func (h *Helper) Install() ([]string, error) {
 	messages := make([]string, 0, 20) // Pre-allocate with capacity of 20
 	messages = append(messages, fmt.Sprintf("Installing %s AUR helper...", h.Name))
 
+	// First, install base-devel package
+	messages = append(messages, "Installing base-devel package...")
+
+	// Create a command to install base-devel
+	var baseDevelCmd *exec.Cmd
+	if h.sudoPassword != "" {
+		baseDevelCmd = exec.Command("sudo", "-S", "pacman", "-S", "--needed", "--noconfirm", "base-devel")
+	} else {
+		baseDevelCmd = exec.Command("sudo", "pacman", "-S", "--needed", "--noconfirm", "base-devel")
+	}
+
+	// Set up pipes for stdin, stdout, and stderr
+	baseDevelStdin, err := baseDevelCmd.StdinPipe()
+	if err != nil {
+		return messages, fmt.Errorf("failed to create stdin pipe for base-devel installation: %w", err)
+	}
+
+	baseDevelStdout, err := baseDevelCmd.StdoutPipe()
+	if err != nil {
+		return messages, fmt.Errorf("failed to create stdout pipe for base-devel installation: %w", err)
+	}
+
+	baseDevelStderr, err := baseDevelCmd.StderrPipe()
+	if err != nil {
+		return messages, fmt.Errorf("failed to create stderr pipe for base-devel installation: %w", err)
+	}
+
+	// Start the command
+	if err := baseDevelCmd.Start(); err != nil {
+		return messages, fmt.Errorf("failed to start base-devel installation: %w", err)
+	}
+
+	// If we have a sudo password, send it
+	if h.sudoPassword != "" {
+		fmt.Fprintf(baseDevelStdin, "%s\n", h.sudoPassword)
+	}
+	baseDevelStdin.Close()
+
+	// Read output line by line to avoid storing everything in memory
+	baseDevelDone := make(chan struct{})
+	go func() {
+		defer close(baseDevelDone)
+		scanner := bufio.NewScanner(io.MultiReader(baseDevelStdout, baseDevelStderr))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line != "" {
+				// Only keep important messages
+				if strings.Contains(line, "error") || strings.Contains(line, "warning") ||
+					strings.Contains(line, "installing") || strings.Contains(line, "upgraded") ||
+					strings.Contains(line, "base-devel") {
+					// Thread-safe append
+					messages = append(messages, line)
+				}
+			}
+		}
+	}()
+
+	// Wait for the command to complete
+	if err := baseDevelCmd.Wait(); err != nil {
+		<-baseDevelDone // Ensure goroutine is done
+		return messages, fmt.Errorf("failed to install base-devel: %w", err)
+	}
+	<-baseDevelDone // Ensure goroutine is done
+
+	messages = append(messages, "base-devel installed successfully")
+
 	// Create a temporary directory
 	tempDir, err := os.MkdirTemp("", "aur-helper")
 	if err != nil {

@@ -1,24 +1,36 @@
 package tui
 
 import (
-	"strings"
-
+	"github.com/Lunaris-Project/lunaris-installer/pkg/tui/ui"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Colors
+// Colors - Tokyo Night theme (imported from ui package)
 var (
-	primaryColor   = lipgloss.Color("#7dcfff")
-	secondaryColor = lipgloss.Color("#bb9af7")
-	successColor   = lipgloss.Color("#9ece6a")
-	warningColor   = lipgloss.Color("#e0af68")
-	errorColor     = lipgloss.Color("#f7768e")
-	textColor      = lipgloss.Color("#c0caf5")
-	dimmedColor    = lipgloss.Color("#565f89")
+	primaryColor    = ui.PrimaryColor
+	secondaryColor  = ui.SecondaryColor
+	successColor    = ui.SuccessColor
+	warningColor    = ui.WarningColor
+	errorColor      = ui.ErrorColor
+	textColor       = ui.TextColor
+	dimmedColor     = ui.DimmedColor
+	accentColor     = ui.AccentColor
+	backgroundColor = ui.BackgroundColor
 )
 
 // Styles
 var (
+	// Container for entire pages
+	PageContainer = lipgloss.NewStyle().
+			Align(lipgloss.Center).
+			AlignVertical(lipgloss.Center)
+
+	// Content box for sections
+	ContentBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(primaryColor).
+			Padding(1, 2).
+			Align(lipgloss.Center)
 	// Base text style
 	BaseStyle = lipgloss.NewStyle().
 			Foreground(textColor)
@@ -27,36 +39,42 @@ var (
 	TitleStyle = lipgloss.NewStyle().
 			Foreground(primaryColor).
 			Bold(true).
+			Underline(true).
 			Padding(1, 0, 0, 0)
 
 	// Subtitle style
 	SubtitleStyle = lipgloss.NewStyle().
 			Foreground(secondaryColor).
-			Bold(true).
+			Italic(true).
 			Padding(0, 0, 1, 0)
 
 	// Box style
 	BoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(primaryColor).
+			BorderForeground(accentColor).
 			Padding(1, 2)
 
 	// Button style
 	ButtonStyle = lipgloss.NewStyle().
-			Foreground(textColor).
-			Background(dimmedColor).
+			Foreground(backgroundColor).
+			Background(primaryColor).
 			Bold(true).
-			Padding(0, 3)
+			Padding(0, 3).
+			Margin(1, 1).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(accentColor)
 
 	// Selection style
 	SelectionStyle = lipgloss.NewStyle().
-			Foreground(primaryColor).
+			Foreground(accentColor).
 			Bold(true)
 
 	// Highlight style
 	HighlightStyle = lipgloss.NewStyle().
 			Background(primaryColor).
-			Foreground(lipgloss.Color("#1a1b26"))
+			Foreground(backgroundColor).
+			Bold(true).
+			Padding(0, 1)
 
 	// Info style
 	InfoStyle = lipgloss.NewStyle().
@@ -64,50 +82,42 @@ var (
 
 	// Warning style
 	WarningStyle = lipgloss.NewStyle().
-			Foreground(warningColor)
+			Foreground(warningColor).
+			Bold(true)
 
 	// Error style
 	ErrorStyle = lipgloss.NewStyle().
-			Foreground(errorColor)
+			Foreground(errorColor).
+			Bold(true)
 
 	// Success style
 	SuccessStyle = lipgloss.NewStyle().
-			Foreground(successColor)
+			Foreground(successColor).
+			Bold(true)
 
 	// Dim style
 	DimStyle = lipgloss.NewStyle().
 			Foreground(dimmedColor)
+
+	// Focused style for inputs
+	FocusedStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(primaryColor).
+			Padding(1, 2)
+
+	// Unfocused style for inputs
+	UnfocusedStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(dimmedColor).
+			Padding(1, 2)
 )
 
 // RenderCheckbox renders a checkbox
 func RenderCheckbox(checked bool) string {
-	if checked {
-		return "[✓]"
-	}
-	return "[ ]"
+	return ui.Checkbox(checked, "", false)
 }
 
 // RenderProgressBar renders a progress bar
 func RenderProgressBar(width, percent int) string {
-	// Ensure percent is between 0 and 100
-	if percent < 0 {
-		percent = 0
-	} else if percent > 100 {
-		percent = 100
-	}
-
-	// Calculate the width of the filled portion
-	filledWidth := (width * percent) / 100
-
-	// Create the filled and empty portions with more visually appealing characters
-	filled := strings.Repeat("█", filledWidth)
-	empty := strings.Repeat("▒", width-filledWidth)
-
-	// Add a border to the progress bar
-	bar := "│" +
-		lipgloss.NewStyle().Foreground(primaryColor).Render(filled) +
-		lipgloss.NewStyle().Foreground(dimmedColor).Render(empty) +
-		"│"
-
-	return bar
+	return ui.ProgressBar(width, percent)
 }
