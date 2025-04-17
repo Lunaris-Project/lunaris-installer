@@ -1,9 +1,4 @@
-<<<<<<< HEAD
-# Lunaris Installer
-# !!Not Ready yet dont use it please hit the readme of HyprLuna to install the dots!!
-=======
 # HyprLuna Installer
->>>>>>> bee28e9 (updates)
 
 A TUI (Text User Interface) application for installing HyprLuna on Arch Linux.
 
@@ -79,8 +74,4 @@ The installer copies configuration files to the following directories:
 
 ## License
 
-<<<<<<< HEAD
-MIT 
-=======
 MIT
->>>>>>> bee28e9 (updates)
